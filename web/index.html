@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dispute Copilot</title>
+  <link rel="stylesheet" href="ag-grid.css">
+  <link rel="stylesheet" href="ag-theme-quartz.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Dispute Copilot</h1>
+    <p class="tag">Every open PayPal dispute, triaged. You approve; it sends.</p>
+    <div id="badges"></div>
+  </header>
+  <main>
+    <section class="queue">
+      <h2>Queue <span class="hint">most urgent first</span></h2>
+      <div id="grid" class="ag-theme-quartz"></div>
+    </section>
+    <section class="case" id="case" aria-live="polite">
+      <p class="empty">Pick a dispute to see the recommendation.</p>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

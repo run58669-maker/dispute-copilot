@@ -1,0 +1,28 @@
+{
+  "name": "dispute-copilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An AI copilot that triages PayPal disputes and drafts the response, with a human approval gate.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-web.mjs",
+    "start": "npm run build && node dist/server/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.5",
+    "ag-grid-community": "^32.3.3",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}

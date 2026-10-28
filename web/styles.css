@@ -1,0 +1,33 @@
+:root {
+  --bg: #f7f8fa; --panel: #ffffff; --ink: #1b1f24; --muted: #5d6673; --line: #dfe3e8;
+  --fight: #1f7a4d; --offer: #a86400; --accept: #8a2b2b; --accent: #1d4ed8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111418; --panel: #1a1e24; --ink: #e8ebef; --muted: #9aa4b1; --line: #2c323a; --fight: #4ccf8e; --offer: #f0a63a; --accept: #f08a8a; --accent: #7aa2ff; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+header { padding: 16px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; }
+h1 { margin: 0; font-size: 20px; }
+.tag { margin: 0; color: var(--muted); }
+#badges { margin-left: auto; display: flex; gap: 8px; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+.badge.mock { background: #fff3d6; color: #6b4a00; border-color: #e8c66a; }
+.badge.live { background: #dcf5e7; color: #0f5132; border-color: #8fd3ad; }
+main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; padding: 16px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+h2 { font-size: 16px; margin: 0 0 8px; }
+.hint { color: var(--muted); font-weight: normal; font-size: 13px; }
+#grid { height: 360px; width: 100%; }
+.case { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; min-height: 360px; }
+.empty { color: var(--muted); }
+.action { font-weight: 700; }
+.action.FIGHT { color: var(--fight); } .action.OFFER { color: var(--offer); } .action.ACCEPT { color: var(--accept); }
+.factors, .plan { margin: 8px 0; padding-left: 18px; }
+.plan .missing { color: var(--muted); }
+textarea { width: 100%; min-height: 140px; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+button, select { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow: auto; font-size: 12px; max-height: 240px; }
+.note { color: var(--muted); font-size: 13px; }
