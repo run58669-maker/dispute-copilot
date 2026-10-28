@@ -358,6 +358,8 @@ describe("allowed actions", () => {
     expect(allowedActions(await paypal.getDispute("PP-D-MOCK-1001"))).toEqual(["FIGHT", "OFFER", "ACCEPT"]);
     expect(allowedActions(await paypal.getDispute("PP-D-MOCK-1003"))).toEqual(["FIGHT", "ACCEPT"]); // chargeback: no offers
     expect(allowedActions({ ...(await paypal.getDispute("PP-D-MOCK-1001")), status: "UNDER_REVIEW" })).toEqual([]);
+    expect(allowedActions({ ...(await paypal.getDispute("PP-D-MOCK-1001")), status: "WAITING_FOR_BUYER_RESPONSE" })).toEqual([]);
+    expect(allowedActions({ ...(await paypal.getDispute("PP-D-MOCK-1001")), dispute_life_cycle_stage: "SOMETHING_NEW" })).toEqual([]);
     expect(allowedActions({ dispute_id: "x", create_time: "", reason: "OTHER", status: "WAITING_FOR_SELLER_RESPONSE", dispute_amount: { currency_code: "USD", value: "1" } })).toEqual([]);
   });
 

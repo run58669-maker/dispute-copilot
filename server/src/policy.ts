@@ -104,12 +104,21 @@ export function offerAmount(money: Money): Money {
 }
 
 /**
- * Seller actions PayPal allows right now. Writes need status WAITING_FOR_SELLER_RESPONSE; then
- * provide-evidence needs the `provide_evidence` link, make-offer a REFUND offer type (or `make_offer` link),
- * accept-claim the `accept_claim` option (or link). No signal means not allowed.
+ * Field names and enums checked against PayPal Customer Disputes v1 (2026-10-28):
+ * https://developer.paypal.com/api/customer-disputes/v1/schema.json
+ *   dispute.status -> OPEN | WAITING_FOR_BUYER_RESPONSE | WAITING_FOR_SELLER_RESPONSE | UNDER_REVIEW | RESOLVED | OTHER
+ *   dispute.dispute_life_cycle_stage -> INQUIRY | CHARGEBACK | PRE_ARBITRATION | ARBITRATION
+ */
+const LIFECYCLE_STAGES = new Set(["INQUIRY", "CHARGEBACK", "PRE_ARBITRATION", "ARBITRATION"]);
+
+/**
+ * Seller actions PayPal allows right now. Writes need status WAITING_FOR_SELLER_RESPONSE and, when present, a
+ * known dispute_life_cycle_stage; then provide-evidence needs the `provide_evidence` link, make-offer a REFUND
+ * offer type (or `make_offer` link), accept-claim the `accept_claim` option (or link). No signal means not allowed.
  */
 export function allowedActions(dispute: Dispute): Action[] {
   if (dispute.status !== "WAITING_FOR_SELLER_RESPONSE") return [];
+  if (dispute.dispute_life_cycle_stage !== undefined && !LIFECYCLE_STAGES.has(dispute.dispute_life_cycle_stage)) return [];
   const rels = new Set((dispute.links ?? []).map((link) => link.rel));
   const options = dispute.allowed_response_options ?? {};
   const allowed: Action[] = [];
