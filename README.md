@@ -2,6 +2,10 @@
 
 An AI copilot for small PayPal sellers. It pulls every open dispute from the PayPal Disputes API, ranks them by deadline and money at risk, and for each one recommends **fight with evidence**, **offer a partial refund**, or **accept** — with the score broken down, the evidence PayPal asks for, and a drafted response. Nothing reaches PayPal until the seller previews the exact request and clicks **Approve & send**.
 
+**Live demo (mock mode, sample disputes):** https://dispute-copilot-7vbm.onrender.com (Render free tier: first request after idle can take ~50 s)
+
+![Dispute queue](docs/screenshots/02_queue_live_render.png)
+
 Built for the PayPal AI Hackathon (2026). Sandbox only: the client refuses any non-sandbox PayPal URL.
 
 ## Run it (no keys needed)
