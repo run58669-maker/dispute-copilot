@@ -40,7 +40,7 @@ Copy `.env.example` to `.env` (or set the variables in your shell):
 4. **Action** — FIGHT ≥ 60, OFFER 30–59 (half the amount), ACCEPT < 30 or amount under 15.
 5. **Missing facts never become a silent refund** — if the order, capture or tracking cannot be read, the case is marked *insufficient facts* and routed to FIGHT-review by a human.
 6. **What PayPal allows** — `status`, `allowed_response_options` and the dispute's action links decide which of the three actions can be sent; the others are disabled in the UI and refused by the server.
-7. **Human gate** — preview → approve → `provide-evidence` / `make-offer` / `accept-claim`. If the model's score nudge changed the action the rules picked, the UI shows a red *AI changed recommendation — confirm* notice and Approve needs an explicit checkbox.
+7. **Human gate** — preview → approve → `provide-evidence` / `make-offer` / `accept-claim`. If the model's score nudge changed the action the rules picked, the UI shows a red *AI changed recommendation — confirm* notice and Approve needs an explicit checkbox (`confirmed: true`). Approve sends exactly the last previewed request (single-use `previewId`, 10 min) and never re-runs the LLM; without a current preview it answers 409 *Preview first*.
 
 ## Safety
 

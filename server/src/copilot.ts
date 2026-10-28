@@ -1,11 +1,53 @@
+import { randomUUID } from "node:crypto";
 import type { Drafter } from "./drafter.js";
 import { mapLimit } from "./limit.js";
 import { factsErrorReason, MAX_IN_FLIGHT, PayPalHttpError } from "./paypal-client.js";
 import { allowedActions, amountOf, buildRequest, clamp, decideAction, evidencePlan, hoursLeft, offerAmount, ruleScore } from "./policy.js";
 import type { Action, DisputeCase, OutboundRequest, PayPalClient, Recommendation } from "./types.js";
 
+/** A preview and its recommendation stay valid this long; approve after that needs a fresh preview. */
+export const PREVIEW_TTL_MS = 10 * 60_000;
+
+export interface PreviewResult {
+  request: OutboundRequest;
+  /** Single-use nonce; approve must send it back. */
+  previewId: string;
+  expiresAt: string;
+  recommendedAction: Action;
+  rulesAction: Action;
+  actionChangedByLLM: boolean;
+}
+
+interface PreviewEntry {
+  previewId: string;
+  action: Action;
+  draft: string;
+  request: OutboundRequest;
+  actionChangedByLLM: boolean;
+  rulesAction: Action;
+  recommendedAction: Action;
+  expiresAt: number;
+}
+
 export class DisputeCopilot {
-  constructor(private readonly paypal: PayPalClient, private readonly drafter: Drafter, private readonly now: () => Date = () => new Date()) {}
+  /** Last recommendation per dispute (from the queue or a preview), so preview/approve never re-run the LLM. */
+  private readonly recs = new Map<string, { rec: Recommendation; expiresAt: number }>();
+  /** Last preview per dispute; approve sends exactly this request, once. */
+  private readonly previews = new Map<string, PreviewEntry>();
+
+  constructor(
+    private readonly paypal: PayPalClient,
+    private readonly drafter: Drafter,
+    private readonly now: () => Date = () => new Date(),
+    private readonly clock: () => number = () => Date.now(),
+  ) {}
+
+  private remember(rec: Recommendation): Recommendation {
+    const now = this.clock();
+    for (const map of [this.recs, this.previews] as Array<Map<string, { expiresAt: number }>>) for (const [k, v] of map) if (v.expiresAt <= now) map.delete(k);
+    this.recs.set(rec.disputeId, { rec, expiresAt: now + PREVIEW_TTL_MS });
+    return rec;
+  }
 
   async loadCase(id: string): Promise<DisputeCase> {
     const dispute = await this.paypal.getDispute(id);
@@ -24,7 +66,7 @@ export class DisputeCopilot {
   /** Queue: every open dispute with its recommendation, most urgent first (hours left, then amount). At most 5 disputes in flight. */
   async queue(): Promise<Recommendation[]> {
     const disputes = await this.paypal.listOpenDisputes();
-    const recs = await mapLimit(disputes, MAX_IN_FLIGHT, async (dispute) => this.recommend({ dispute, facts: await this.factsFor(dispute) }));
+    const recs = await mapLimit(disputes, MAX_IN_FLIGHT, async (dispute) => this.remember(await this.recommend({ dispute, facts: await this.factsFor(dispute) })));
     return recs.sort((a, b) => (a.hoursLeft ?? Infinity) - (b.hoursLeft ?? Infinity) || b.amount - a.amount);
   }
 
@@ -73,28 +115,65 @@ export class DisputeCopilot {
     };
   }
 
-  /** Preview of exactly what Approve would send. The seller may override the action and edit the draft. */
-  async preview(id: string, action: Action, draft: string): Promise<OutboundRequest> {
+  /**
+   * Preview of exactly what Approve would send. The seller may override the action and edit the draft.
+   * Uses the cached recommendation (the LLM runs only if this dispute has none yet) and stores the request
+   * under a single-use previewId for approve.
+   */
+  async preview(id: string, action: Action, draft: string): Promise<PreviewResult> {
     const kase = await this.loadCase(id);
     const allowed = allowedActions(kase.dispute);
     if (!allowed.includes(action)) {
       throw new PayPalHttpError(409, `PayPal does not allow ${action} on this dispute now (status ${kase.dispute.status}). Allowed: ${allowed.join(", ") || "none"}.`);
     }
     const plan = evidencePlan(kase.dispute.reason, kase.facts);
-    return buildRequest(kase.dispute.dispute_id, action, draft, kase.facts, plan, offerAmount(kase.dispute.dispute_amount));
+    const request = buildRequest(kase.dispute.dispute_id, action, draft, kase.facts, plan, offerAmount(kase.dispute.dispute_amount));
+    const cached = this.recs.get(id);
+    const rec = cached && cached.expiresAt > this.clock() ? cached.rec : this.remember(await this.recommend(kase));
+    const entry: PreviewEntry = {
+      previewId: randomUUID(),
+      action,
+      draft,
+      request,
+      actionChangedByLLM: rec.actionChangedByLLM,
+      rulesAction: rec.rulesAction,
+      recommendedAction: rec.action,
+      expiresAt: this.clock() + PREVIEW_TTL_MS,
+    };
+    this.previews.set(id, entry);
+    return {
+      request,
+      previewId: entry.previewId,
+      expiresAt: new Date(entry.expiresAt).toISOString(),
+      recommendedAction: entry.recommendedAction,
+      rulesAction: entry.rulesAction,
+      actionChangedByLLM: entry.actionChangedByLLM,
+    };
   }
 
   /**
-   * Human-approved send. Rebuilds the request server-side; the client never supplies a raw PayPal request.
-   * When the model flipped the rules' action, the seller must tick an explicit confirmation.
+   * Human-approved send of the last preview: no LLM call, no rebuild, the client never supplies a raw PayPal request.
+   * No matching preview (missing, expired, replaced, or action/draft edited since) -> 409 "Preview first".
+   * When the model flipped the rules' action, the seller must confirm (`confirmed: true`).
    */
-  async approve(id: string, action: Action, draft: string, confirmAiChange = false): Promise<{ request: OutboundRequest; status: number; body: unknown }> {
-    const request = await this.preview(id, action, draft);
-    const rec = await this.recommend(await this.loadCase(id));
-    if (rec.actionChangedByLLM && !confirmAiChange) {
-      throw new PayPalHttpError(409, `AI changed the recommendation from ${rec.rulesAction} to ${rec.action}; tick the confirmation before sending.`);
+  async approve(
+    id: string,
+    action: Action,
+    draft: string,
+    opts: { previewId?: string; confirmed?: boolean } = {},
+  ): Promise<{ request: OutboundRequest; status: number; body: unknown }> {
+    const entry = this.previews.get(id);
+    if (!entry || entry.expiresAt <= this.clock() || !opts.previewId || entry.previewId !== opts.previewId) {
+      throw new PayPalHttpError(409, "Preview first: there is no current preview for this dispute (missing, expired or replaced).");
     }
-    const result = await this.paypal.send(id, request);
-    return { request, status: result.status, body: result.body };
+    if (entry.action !== action || entry.draft !== draft) {
+      throw new PayPalHttpError(409, "Preview first: the action or draft changed since the preview.");
+    }
+    if (entry.actionChangedByLLM && !opts.confirmed) {
+      throw new PayPalHttpError(409, `AI changed the recommendation from ${entry.rulesAction} to ${entry.recommendedAction}; tick the confirmation before sending.`);
+    }
+    this.previews.delete(id); // single use: a double click cannot send twice
+    const result = await this.paypal.send(id, entry.request);
+    return { request: entry.request, status: result.status, body: result.body };
   }
 }

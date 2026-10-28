@@ -29,9 +29,9 @@ describe("copilot on mock fixtures", () => {
     const paypal = MockPayPalClient.fromFile(fixtures, NOW);
     const copilot = new DisputeCopilot(paypal, new TemplateDrafter(), () => NOW);
     await copilot.queue();
-    await copilot.preview("PP-D-MOCK-1001", "FIGHT", "Delivered per USPS tracking.");
+    const { previewId } = await copilot.preview("PP-D-MOCK-1001", "FIGHT", "Delivered per USPS tracking.");
     expect(paypal.sent).toHaveLength(0);
-    const result = await copilot.approve("PP-D-MOCK-1001", "FIGHT", "Delivered per USPS tracking.");
+    const result = await copilot.approve("PP-D-MOCK-1001", "FIGHT", "Delivered per USPS tracking.", { previewId });
     expect(result.request.path).toBe("/v1/customer/disputes/PP-D-MOCK-1001/provide-evidence");
     expect(paypal.sent).toHaveLength(1);
     expect((await copilot.queue()).map((r) => r.disputeId)).not.toContain("PP-D-MOCK-1001");
@@ -194,8 +194,9 @@ describe("safety", () => {
       const bad = await fetch(`${url}/api/disputes/PP-D-MOCK-1001/approve`, { method: "POST", headers: { "Content-Type": "application/json", "x-admin-token": "t0ken" }, body: JSON.stringify({ action: "DELETE", draft: "x" }) });
       expect(bad.status).toBe(400);
       const missing = await fetch(`${url}/api/disputes/NOPE-1/approve`, { method: "POST", headers: { "Content-Type": "application/json", "x-admin-token": "t0ken" }, body: JSON.stringify({ action: "ACCEPT", draft: "x" }) });
-      expect(missing.status).toBe(404);
-      const ok = await fetch(`${url}/api/disputes/PP-D-MOCK-1004/approve`, { method: "POST", headers: { "Content-Type": "application/json", "x-admin-token": "t0ken" }, body: JSON.stringify({ action: "ACCEPT", draft: "Refunding now." }) });
+      expect(missing.status).toBe(409); // no preview exists for it
+      const pv = (await (await fetch(`${url}/api/disputes/PP-D-MOCK-1004/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "ACCEPT", draft: "Refunding now." }) })).json()) as { previewId: string };
+      const ok = await fetch(`${url}/api/disputes/PP-D-MOCK-1004/approve`, { method: "POST", headers: { "Content-Type": "application/json", "x-admin-token": "t0ken" }, body: JSON.stringify({ action: "ACCEPT", draft: "Refunding now.", previewId: pv.previewId }) });
       expect(ok.status).toBe(200);
       expect(((await ok.json()) as { request: { path: string } }).request.path).toBe("/v1/customer/disputes/PP-D-MOCK-1004/accept-claim");
     } finally {

@@ -100,7 +100,7 @@ function showCase(rec: Rec): void {
     <ul class="plan">${rec.evidencePlan.map((p) => `<li class="${p.have ? "" : "missing"}">${p.have ? "✓" : "✗"} ${esc(p.evidence_type)} — ${esc(p.why)}</li>`).join("")}</ul>
     <h3>Draft <span class="hint">(${rec.draftSource === "llm" ? "AI" : "template"}; edit freely)</span></h3>
     <textarea id="draft">${esc(rec.draft)}</textarea>
-    ${rec.actionChangedByLLM ? '<label class="confirm"><input type="checkbox" id="confirm-ai"> I reviewed the AI-changed recommendation</label>' : ""}
+    ${rec.actionChangedByLLM ? `<label class="confirm"><input type="checkbox" id="confirm-ai"> AI changed recommendation (${rec.rulesAction} → ${rec.action}) — confirm</label>` : ""}
     <div class="row">
       <label>Action <select id="action">${(["FIGHT", "OFFER", "ACCEPT"] as const)
         .map((a) => `<option ${a === rec.action && allowed.has(a) ? "selected" : ""} ${allowed.has(a) ? "" : "disabled"}>${a}${allowed.has(a) ? "" : " (not allowed)"}</option>`)
@@ -115,10 +115,10 @@ function showCase(rec: Rec): void {
   const approve = caseEl.querySelector("#approve") as HTMLButtonElement;
   const confirmBox = caseEl.querySelector("#confirm-ai") as HTMLInputElement | null;
   let previewed = false;
+  let previewId = "";
   const read = () => ({
     action: (caseEl.querySelector("#action") as HTMLSelectElement).value,
     draft: (caseEl.querySelector("#draft") as HTMLTextAreaElement).value,
-    confirmAiChange: confirmBox?.checked === true,
   });
   const refresh = () => {
     const reasons: string[] = [];
@@ -131,6 +131,7 @@ function showCase(rec: Rec): void {
   };
   const invalidate = () => {
     previewed = false;
+    previewId = "";
     refresh();
   };
   caseEl.querySelector("#action")?.addEventListener("change", invalidate);
@@ -140,9 +141,10 @@ function showCase(rec: Rec): void {
   caseEl.querySelector("#preview")?.addEventListener("click", async () => {
     out.hidden = false;
     try {
-      const { request } = await api<{ request: unknown }>(`/api/disputes/${encodeURIComponent(rec.disputeId)}/preview`, read());
-      out.textContent = JSON.stringify(request, null, 2);
-      previewed = true; // Approve only what was previewed.
+      const preview = await api<{ request: unknown; previewId: string; actionChangedByLLM: boolean }>(`/api/disputes/${encodeURIComponent(rec.disputeId)}/preview`, read());
+      out.textContent = JSON.stringify(preview.request, null, 2);
+      previewId = preview.previewId;
+      previewed = true; // Approve sends exactly this preview, once.
     } catch (error) {
       out.textContent = `Cannot send: ${(error as Error).message}`;
       previewed = false;
@@ -152,14 +154,15 @@ function showCase(rec: Rec): void {
   approve.addEventListener("click", async () => {
     approve.disabled = true;
     try {
-      const result = await api<{ status: number }>(`/api/disputes/${encodeURIComponent(rec.disputeId)}/approve`, read(), true);
+      const body = { ...read(), previewId, ...(confirmBox?.checked ? { confirmed: true } : {}) };
+      const result = await api<{ status: number }>(`/api/disputes/${encodeURIComponent(rec.disputeId)}/approve`, body, true);
       current = null;
       caseEl.innerHTML = `<p class="sent">Sent ${esc(rec.disputeId)}. PayPal answered HTTP ${result.status}.</p>${EMPTY}`;
       await load();
     } catch (error) {
       out.hidden = false;
       out.textContent = `Send failed: ${(error as Error).message}`;
-      refresh();
+      invalidate(); // the server consumed or rejected this preview; preview again before retrying
     }
   });
 }

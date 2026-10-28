@@ -36,11 +36,12 @@ export function createDrafter(env: NodeJS.ProcessEnv): Drafter {
   return new TemplateDrafter();
 }
 
-function parseApproval(body: unknown): { action: Action; draft: string; confirmAiChange: boolean } {
-  const { action, draft, confirmAiChange } = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+function parseApproval(body: unknown): { action: Action; draft: string; confirmed: boolean; previewId?: string } {
+  const { action, draft, confirmed, confirmAiChange, previewId } = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
   if (typeof action !== "string" || !(ACTIONS as readonly string[]).includes(action)) throw new PayPalHttpError(400, "action must be FIGHT, OFFER or ACCEPT.");
   if (typeof draft !== "string" || draft.trim().length === 0 || draft.length > 4000) throw new PayPalHttpError(400, "draft must be 1-4000 characters.");
-  return { action: action as Action, draft, confirmAiChange: confirmAiChange === true };
+  if (previewId !== undefined && (typeof previewId !== "string" || !/^[0-9a-f-]{36}$/.test(previewId))) throw new PayPalHttpError(400, "previewId is malformed.");
+  return { action: action as Action, draft, confirmed: confirmed === true || confirmAiChange === true, ...(typeof previewId === "string" ? { previewId } : {}) };
 }
 
 export interface AppOptions {
@@ -164,7 +165,7 @@ export function createApp(paypal: PayPalClient, drafter: Drafter, options: AppOp
   app.post("/api/disputes/:id/preview", async (req, res, next) => {
     try {
       const { action, draft } = parseApproval(req.body);
-      res.json({ request: await copilot.preview(String(req.params.id), action, draft) });
+      res.json(await copilot.preview(String(req.params.id), action, draft));
     } catch (error) {
       next(error);
     }
@@ -172,8 +173,8 @@ export function createApp(paypal: PayPalClient, drafter: Drafter, options: AppOp
 
   app.post("/api/disputes/:id/approve", requireAdmin, async (req, res, next) => {
     try {
-      const { action, draft, confirmAiChange } = parseApproval(req.body);
-      res.json(await copilot.approve(String(req.params.id), action, draft, confirmAiChange));
+      const { action, draft, confirmed, previewId } = parseApproval(req.body);
+      res.json(await copilot.approve(String(req.params.id), action, draft, { confirmed, ...(previewId ? { previewId } : {}) }));
     } catch (error) {
       next(error);
     }

@@ -41,7 +41,12 @@ function serve(paypal: PayPalClient, drafter: Drafter, options: Parameters<typeo
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
     fetch(`${url}${path}`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
-  return { url, post };
+  /** Preview, then approve with the returned previewId. */
+  const previewThenApprove = async (id: string, body: Record<string, unknown>, headers: Record<string, string> = {}) => {
+    const pv = (await (await post(`/api/disputes/${id}/preview`, { action: body.action, draft: body.draft })).json()) as { previewId?: string };
+    return post(`/api/disputes/${id}/approve`, { ...body, previewId: pv.previewId }, headers);
+  };
+  return { url, post, previewThenApprove };
 }
 const mock = () => MockPayPalClient.fromFile(fixtures, NOW);
 
@@ -59,10 +64,10 @@ describe("write auth gate", () => {
 
   it("requires the exact x-admin-token when one is configured", async () => {
     const paypal = mock();
-    const { post } = serve(paypal, new TemplateDrafter(), { adminToken: "s3cret" });
+    const { post, previewThenApprove } = serve(paypal, new TemplateDrafter(), { adminToken: "s3cret" });
     expect((await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "ok" })).status).toBe(403);
     expect((await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "ok" }, { "x-admin-token": "s3cre" })).status).toBe(403);
-    expect((await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "ok" }, { "x-admin-token": "s3cret" })).status).toBe(200);
+    expect((await previewThenApprove("PP-D-MOCK-1004", { action: "ACCEPT", draft: "ok" }, { "x-admin-token": "s3cret" })).status).toBe(200);
     expect(paypal.sent).toHaveLength(1);
   });
 });
@@ -382,11 +387,13 @@ describe("AI-changed recommendation", () => {
     expect(rec).toMatchObject({ rulesAction: "OFFER", action: "ACCEPT", actionChangedByLLM: true });
 
     const { post } = serve(paypal, drafter, { adminToken: "t" });
-    const blocked = await post("/api/disputes/PP-D-MOCK-1002/approve", { action: "ACCEPT", draft: "We accept." }, { "x-admin-token": "t" });
+    const pv = (await (await post("/api/disputes/PP-D-MOCK-1002/preview", { action: "ACCEPT", draft: "We accept." })).json()) as { previewId: string; actionChangedByLLM: boolean };
+    expect(pv.actionChangedByLLM).toBe(true);
+    const blocked = await post("/api/disputes/PP-D-MOCK-1002/approve", { action: "ACCEPT", draft: "We accept.", previewId: pv.previewId }, { "x-admin-token": "t" });
     expect(blocked.status).toBe(409);
     expect(((await blocked.json()) as { error: string }).error).toMatch(/AI changed the recommendation from OFFER to ACCEPT/);
     expect(paypal.sent).toHaveLength(0);
-    const ok = await post("/api/disputes/PP-D-MOCK-1002/approve", { action: "ACCEPT", draft: "We accept.", confirmAiChange: true }, { "x-admin-token": "t" });
+    const ok = await post("/api/disputes/PP-D-MOCK-1002/approve", { action: "ACCEPT", draft: "We accept.", previewId: pv.previewId, confirmed: true }, { "x-admin-token": "t" });
     expect(ok.status).toBe(200);
   });
 
@@ -419,7 +426,8 @@ describe("judge fixes", () => {
     let t = 0;
     const paypal = MockPayPalClient.fromFile(fixtures, NOW, { resetEveryMs: 600_000, clock: () => t });
     const copilot = new DisputeCopilot(paypal, new TemplateDrafter(), () => NOW);
-    await copilot.approve("PP-D-MOCK-1004", "ACCEPT", "ok");
+    const { previewId } = await copilot.preview("PP-D-MOCK-1004", "ACCEPT", "ok");
+    await copilot.approve("PP-D-MOCK-1004", "ACCEPT", "ok", { previewId });
     expect(await paypal.listOpenDisputes()).toHaveLength(4);
     t = 599_999;
     expect(await paypal.listOpenDisputes()).toHaveLength(4);
@@ -515,5 +523,56 @@ describe("queue resilience and concurrency", () => {
     ]);
     expect(await client(impl).listOpenDisputes()).toHaveLength(12);
     expect(peak).toBe(5);
+  });
+});
+
+describe("approve uses the cached preview", () => {
+  const cfg = { apiKey: "k", baseUrl: "https://llm.example", model: "m" };
+  const counting = () => {
+    let calls = 0;
+    const impl = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ assessment: "a", draft: "We accept.", delta: 0, why: "" }) } }] }));
+    }) as unknown as typeof fetch;
+    return { impl, count: () => calls };
+  };
+
+  it("409 'Preview first' without a preview, with a wrong/stale previewId, or after editing the draft", async () => {
+    const paypal = mock();
+    const { post } = serve(paypal, new TemplateDrafter(), { adminToken: "t" });
+    const h = { "x-admin-token": "t" };
+    const none = await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "ok" }, h);
+    expect(none.status).toBe(409);
+    expect(((await none.json()) as { error: string }).error).toMatch(/^Preview first/);
+    const first = (await (await post("/api/disputes/PP-D-MOCK-1004/preview", { action: "ACCEPT", draft: "ok" })).json()) as { previewId: string };
+    const second = (await (await post("/api/disputes/PP-D-MOCK-1004/preview", { action: "ACCEPT", draft: "ok" })).json()) as { previewId: string };
+    expect((await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "ok", previewId: first.previewId }, h)).status).toBe(409); // replaced
+    expect((await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "edited", previewId: second.previewId }, h)).status).toBe(409);
+    expect(paypal.sent).toHaveLength(0);
+    expect((await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "ok", previewId: second.previewId }, h)).status).toBe(200);
+    // single use: a second click cannot send again
+    expect((await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "ok", previewId: second.previewId }, h)).status).toBe(409);
+    expect(paypal.sent).toHaveLength(1);
+  });
+
+  it("previews expire after PREVIEW_TTL_MS", async () => {
+    let t = 0;
+    const copilot = new DisputeCopilot(mock(), new TemplateDrafter(), () => NOW, () => t);
+    const { previewId } = await copilot.preview("PP-D-MOCK-1004", "ACCEPT", "ok");
+    t = 10 * 60_000;
+    await expect(copilot.approve("PP-D-MOCK-1004", "ACCEPT", "ok", { previewId })).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/^Preview first/) });
+  });
+
+  it("approve does not call the LLM; preview reuses the queue's recommendation", async () => {
+    const llm = counting();
+    const paypal = mock();
+    const copilot = new DisputeCopilot(paypal, new LlmDrafter(cfg, llm.impl), () => NOW);
+    await copilot.queue();
+    const afterQueue = llm.count();
+    expect(afterQueue).toBeGreaterThan(0);
+    const { previewId } = await copilot.preview("PP-D-MOCK-1004", "ACCEPT", "ok");
+    await copilot.approve("PP-D-MOCK-1004", "ACCEPT", "ok", { previewId });
+    expect(llm.count()).toBe(afterQueue);
+    expect(paypal.sent).toHaveLength(1);
   });
 });
