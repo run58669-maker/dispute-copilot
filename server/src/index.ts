@@ -50,6 +50,21 @@ export interface AppOptions {
   rateLimit?: { read: number; write: number; windowMs?: number };
 }
 
+const IP_RE = /^[0-9A-Fa-f:.]{2,45}$/;
+const firstIp = (value: string | undefined): string | undefined => {
+  const ip = value?.split(",")[0]?.trim();
+  return ip && IP_RE.test(ip) ? ip : undefined;
+};
+
+/**
+ * The visitor's IP for rate limiting. Render's edge (Cloudflare) sets `True-Client-IP` to the real client and
+ * the proxy chain in X-Forwarded-For varies, so `trust proxy` alone collapsed everyone into one bucket.
+ * Order: True-Client-IP, then the first X-Forwarded-For entry, then the socket address.
+ */
+export function clientIp(req: Request): string {
+  return firstIp(req.get("true-client-ip")) ?? firstIp(req.get("x-forwarded-for")) ?? req.ip ?? req.socket?.remoteAddress ?? "unknown";
+}
+
 /** Fixed-window per-IP limiter; reads and writes are counted in separate buckets. */
 export function rateLimiter(limits: { read: number; write: number; windowMs?: number }, isWrite: (req: Request) => boolean): RequestHandler {
   const windowMs = limits.windowMs ?? 60_000;
@@ -58,7 +73,7 @@ export function rateLimiter(limits: { read: number; write: number; windowMs?: nu
     const now = Date.now();
     if (hits.size > 10_000) for (const [key, hit] of hits) if (hit.resetAt <= now) hits.delete(key);
     const write = isWrite(req);
-    const key = `${write ? "w" : "r"}|${req.ip ?? "unknown"}`;
+    const key = `${write ? "w" : "r"}|${clientIp(req)}`;
     let hit = hits.get(key);
     if (!hit || hit.resetAt <= now) {
       hit = { count: 0, resetAt: now + windowMs };
@@ -103,7 +118,7 @@ export function createApp(paypal: PayPalClient, drafter: Drafter, options: AppOp
   const adminToken = options.adminToken || undefined;
   const app = express();
   app.disable("x-powered-by");
-  app.set("trust proxy", 1); // Render terminates TLS in front of us; req.ip is the client from X-Forwarded-For.
+  // Client IP for the limiter comes from clientIp() (True-Client-IP / X-Forwarded-For), not from req.ip.
 
   app.use((_req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");

@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { DisputeCopilot } from "./copilot.js";
 import { LlmDrafter, TemplateDrafter } from "./drafter.js";
-import { createApp, CSP } from "./index.js";
+import { clientIp, createApp, CSP } from "./index.js";
 import { MockPayPalClient, PayPalHttpError, SandboxPayPalClient, paypalErrorReason } from "./paypal-client.js";
 import { allowedActions, buildRequest, evidencePlan } from "./policy.js";
 import type { Dispute, PayPalClient } from "./types.js";
@@ -77,6 +77,22 @@ describe("rate limit and headers", () => {
     for (let i = 0; i < 3; i += 1) writes.push((await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "ok" })).status);
     expect(writes).toEqual([403, 403, 429]);
     expect((await fetch(`${url}/api/health`)).status).toBe(200); // health is exempt
+  });
+
+  it("clientIp prefers True-Client-IP, then the first X-Forwarded-For entry, then req.ip", () => {
+    const req = (headers: Record<string, string>, ip = "10.0.0.1") => ({ ip, socket: {}, get: (h: string) => headers[h.toLowerCase()] }) as unknown as Parameters<typeof clientIp>[0];
+    expect(clientIp(req({ "true-client-ip": "203.0.113.7", "x-forwarded-for": "198.51.100.1, 10.1.1.1" }))).toBe("203.0.113.7");
+    expect(clientIp(req({ "x-forwarded-for": "198.51.100.1, 10.1.1.1" }))).toBe("198.51.100.1");
+    expect(clientIp(req({ "x-forwarded-for": "2001:db8::1" }))).toBe("2001:db8::1");
+    expect(clientIp(req({}))).toBe("10.0.0.1");
+    expect(clientIp(req({ "true-client-ip": "<script>", "x-forwarded-for": "garbage value" }))).toBe("10.0.0.1");
+  });
+
+  it("buckets visitors behind the same proxy separately by True-Client-IP", async () => {
+    const { url } = serve(mock(), new TemplateDrafter(), { rateLimit: { read: 2, write: 1 } });
+    const get = (ip: string) => fetch(`${url}/api/disputes`, { headers: { "True-Client-IP": ip, "X-Forwarded-For": `${ip}, 10.0.0.9` } }).then((r) => r.status);
+    expect([await get("203.0.113.1"), await get("203.0.113.1"), await get("203.0.113.1")]).toEqual([200, 200, 429]);
+    expect(await get("203.0.113.2")).toBe(200);
   });
 
   it("defaults to 30 reads per minute", async () => {
