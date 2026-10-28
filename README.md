@@ -4,7 +4,7 @@ An AI copilot for small PayPal sellers. It pulls every open dispute from the Pay
 
 **Live demo:** https://dispute-copilot-7vbm.onrender.com (Render free tier: first request after idle can take ~50 s)
 
-> **Honest status:** the live demo runs in **mock mode** (five sample disputes from `fixtures/disputes.json`) until PayPal sandbox credentials are connected. AI drafting (Gemini 2.5 Flash) is on only when the deploy has `LLM_API_KEY`; check `/api/health` — `"drafter":"llm"` means AI drafts, `"template"` means the deterministic fallback, and the header badge says which. The public demo is **read-only**: Preview works, Approve returns 403 because no `ADMIN_TOKEN` is set there. The real-API code paths (OAuth, pagination, order/tracking facts, multipart evidence upload, retries) are unit-tested against mocked PayPal responses, not yet against the live sandbox.
+> **Honest status:** the live demo runs in **mock mode** (five sample disputes from `fixtures/disputes.json`) until PayPal sandbox credentials are connected. AI drafting (Gemini 2.5 Flash) is on only when the deploy has `LLM_API_KEY`; check `/api/health` — `"drafter":"llm"` means AI drafts, `"template"` means the deterministic fallback, and the header badge says which. The public demo is **read-only**: Preview works, Approve returns 403 because no `ADMIN_TOKEN` is set there. The real-API code paths (OAuth, pagination, order/tracking facts, multipart evidence upload, read retries) are unit-tested against mocked PayPal responses, not yet against the live sandbox.
 
 ![Dispute queue](docs/screenshots/02_queue_live_render.png)
 
@@ -45,7 +45,7 @@ Copy `.env.example` to `.env` (or set the variables in your shell):
 ## Safety
 
 - Writes need `ADMIN_TOKEN`; without it the server is read-only. Per-IP rate limit on `/api`: 30 reads/min, 5 writes/min.
-- PayPal calls: 15 s timeout, one retry with backoff on 429/5xx (same `PayPal-Request-Id`, so a retried POST is not applied twice), then the error surfaces as `{status, reason}` with only PayPal's `name`, `message` and `details[].issue`.
+- PayPal calls: 15 s timeout. Reads (GET) get one retry with backoff on 429/5xx. Writes (make-offer, provide-evidence, accept-claim) are sent exactly once and never retried: on a timeout or 5xx the server answers 502 "Status unknown — verify in PayPal Resolution Center", because PayPal may already have applied it. Errors surface as `{status, reason}` with only PayPal's `name`, `message` and `details[].issue`.
 - `Cache-Control: no-store` on the API; CSP (`self` only, plus `data:` for the grid's icon font), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`.
 - Sandbox only: the client refuses any non-sandbox PayPal URL. The mock demo resets approvals every 10 minutes.
 

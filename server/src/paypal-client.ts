@@ -105,6 +105,7 @@ export interface SandboxConfig {
 }
 
 const ID_RE = /^[A-Za-z0-9-]{1,64}$/;
+export const UNKNOWN_WRITE = "Status unknown — verify in PayPal Resolution Center before trying again; nothing was resent";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** PayPal REST (sandbox) client: OAuth client-credentials, Disputes v1 reads, order facts and the three seller actions. */
@@ -137,7 +138,7 @@ export class SandboxPayPalClient implements PayPalClient {
     }
   }
 
-  /** Sends once; on 429/5xx waits and retries exactly once. Returns the final response. */
+  /** Reads only (GET, and the OAuth token): sends once; on 429/5xx waits and retries exactly once. */
   private async withRetry(url: string, init: () => RequestInit): Promise<Response> {
     let response = await this.exchange(url, init());
     if (response.status === 429 || response.status >= 500) {
@@ -146,6 +147,27 @@ export class SandboxPayPalClient implements PayPalClient {
       await response.text().catch(() => "");
       await sleep(wait);
       response = await this.exchange(url, init());
+    }
+    return response;
+  }
+
+  /**
+   * A seller write is sent exactly once. If it times out, the network drops, or PayPal answers 5xx, PayPal may
+   * or may not have applied it, so we never resend: the caller gets a 502 "status unknown" and must check the
+   * Resolution Center. 4xx answers mean PayPal rejected it and are returned as-is.
+   */
+  private async sendOnce(path: string, init: () => RequestInit): Promise<Response> {
+    const what = path.split("?")[0]!.split("/").pop();
+    let response: Response;
+    try {
+      response = await this.exchange(`${this.base()}${path}`, init());
+    } catch (error) {
+      const cause = error instanceof PayPalHttpError ? error.reason ?? `HTTP ${error.status}` : "network";
+      throw new PayPalHttpError(502, `${UNKNOWN_WRITE} (${what}: ${cause}).`, cause);
+    }
+    if (response.status >= 500) {
+      await response.text().catch(() => "");
+      throw new PayPalHttpError(502, `${UNKNOWN_WRITE} (${what}: PayPal HTTP ${response.status}).`, `HTTP ${response.status}`);
     }
     return response;
   }
@@ -172,7 +194,7 @@ export class SandboxPayPalClient implements PayPalClient {
 
   private async call(path: string, init: RequestInit = {}): Promise<{ status: number; body: unknown }> {
     const method = init.method ?? "GET";
-    // Idempotency key shared by the retry, so a POST that PayPal applied but answered with 5xx is not applied twice.
+    // Writes are never retried (see sendOnce); the request id only helps PayPal support trace the call.
     const requestId = method === "GET" ? undefined : randomUUID();
     const build = (token: string) => (): RequestInit => ({
       ...init,
@@ -183,12 +205,14 @@ export class SandboxPayPalClient implements PayPalClient {
         ...((init.headers as Record<string, string> | undefined) ?? {}),
       },
     });
-    let response = await this.withRetry(`${this.base()}${path}`, build(await this.accessToken()));
+    // GET: one backoff retry on 429/5xx. POST (make-offer / provide-evidence / accept-claim): exactly one send.
+    const exchange = method === "GET" ? (b: () => RequestInit) => this.withRetry(`${this.base()}${path}`, b) : (b: () => RequestInit) => this.sendOnce(path, b);
+    let response = await exchange(build(await this.accessToken()));
     if (response.status === 401) {
-      // Token revoked or expired early: refresh once.
+      // Token revoked or expired early: PayPal rejected the call before applying it, so refresh and try once more.
       await response.text().catch(() => "");
       this.token = null;
-      response = await this.withRetry(`${this.base()}${path}`, build(await this.accessToken()));
+      response = await exchange(build(await this.accessToken()));
     }
     const text = await response.text();
     const body = text ? safeJson(text) : null;

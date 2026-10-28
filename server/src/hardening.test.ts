@@ -187,14 +187,41 @@ describe("SandboxPayPalClient (mocked fetch)", () => {
     await expect(client(hang, { timeoutMs: 20 }).getDispute("D-1")).rejects.toMatchObject({ status: 504, reason: "timeout" });
   });
 
-  it("retries once on 503 with the same idempotency key and succeeds", async () => {
-    let n = 0;
-    const { impl, calls } = scripted([oauth(), ["POST /v1/customer/disputes/D-1/accept-claim", () => (++n === 1 ? json({}, 503) : json({ ok: 1 }))]]);
-    const result = await client(impl).send("D-1", buildRequest("D-1", "ACCEPT", "We accept.", {}, []));
-    expect(result.status).toBe(200);
-    const posts = calls.filter((c) => c.key.endsWith("/accept-claim"));
-    expect(posts).toHaveLength(2);
-    expect((posts[0]!.init.headers as Record<string, string>)["PayPal-Request-Id"]).toBe((posts[1]!.init.headers as Record<string, string>)["PayPal-Request-Id"]);
+  it("never resends a write: a 503 on accept-claim is sent exactly once and reported as status unknown", async () => {
+    const { impl, calls } = scripted([oauth(), ["POST /v1/customer/disputes/D-1/accept-claim", () => json({}, 503)]]);
+    const error = (await client(impl).send("D-1", buildRequest("D-1", "ACCEPT", "We accept.", {}, [])).catch((e: unknown) => e)) as PayPalHttpError;
+    expect(error).toBeInstanceOf(PayPalHttpError);
+    expect(error.status).toBe(502);
+    expect(error.message).toMatch(/^Status unknown — verify in PayPal Resolution Center/);
+    expect(calls.filter((c) => c.key.endsWith("/accept-claim"))).toHaveLength(1);
+  });
+
+  it("never resends a write that timed out (make-offer / provide-evidence)", async () => {
+    for (const action of ["OFFER", "FIGHT"] as const) {
+      const posts: string[] = [];
+      const impl = (async (input: string, init: RequestInit = {}) => {
+        const url = new URL(input);
+        if (url.pathname === "/v1/oauth2/token") return json({ access_token: "t", expires_in: 3600 });
+        posts.push(url.pathname);
+        return new Promise((_res, rej) => init.signal?.addEventListener("abort", () => rej(new Error("aborted"))));
+      }) as unknown as typeof fetch;
+      const facts = { carrier: "USPS", trackingNumber: "9400", trackingStatus: "DELIVERED" as const };
+      const request = buildRequest("D-1", action, "x", facts, evidencePlan("MERCHANDISE_OR_SERVICE_NOT_RECEIVED", facts), { currency_code: "USD", value: "1.00" });
+      await expect(client(impl, { timeoutMs: 20 }).send("D-1", request)).rejects.toMatchObject({ status: 502, reason: "timeout", message: expect.stringMatching(/^Status unknown/) });
+      expect(posts).toHaveLength(1);
+    }
+  });
+
+  it("HTTP: a write with unknown outcome answers 502 with the verify message", async () => {
+    const { impl } = scripted([oauth(), ["POST /v1/customer/disputes/", () => json({}, 500)]]);
+    const pp = client(impl);
+    const kase = await mock().getDispute("PP-D-MOCK-1004");
+    const paypal: PayPalClient = { mode: "sandbox", listOpenDisputes: async () => [kase], getDispute: async () => kase, getFacts: async () => ({}), send: (id, r) => pp.send(id, r) };
+    const { post } = serve(paypal, new TemplateDrafter(), { adminToken: "t" });
+    const preview = (await (await post("/api/disputes/PP-D-MOCK-1004/preview", { action: "ACCEPT", draft: "ok" })).json()) as { previewId?: string };
+    const res = await post("/api/disputes/PP-D-MOCK-1004/approve", { action: "ACCEPT", draft: "ok", previewId: preview.previewId }, { "x-admin-token": "t" });
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toMatch(/^Status unknown — verify in PayPal Resolution Center/);
   });
 
   it("after a second 429, surfaces status + safe reason fields only", async () => {
