@@ -1,5 +1,6 @@
 import type { Drafter } from "./drafter.js";
-import { PayPalHttpError } from "./paypal-client.js";
+import { mapLimit } from "./limit.js";
+import { factsErrorReason, MAX_IN_FLIGHT, PayPalHttpError } from "./paypal-client.js";
 import { allowedActions, amountOf, buildRequest, clamp, decideAction, evidencePlan, hoursLeft, offerAmount, ruleScore } from "./policy.js";
 import type { Action, DisputeCase, OutboundRequest, PayPalClient, Recommendation } from "./types.js";
 
@@ -8,14 +9,22 @@ export class DisputeCopilot {
 
   async loadCase(id: string): Promise<DisputeCase> {
     const dispute = await this.paypal.getDispute(id);
-    return { dispute, facts: await this.paypal.getFacts(dispute) };
+    return { dispute, facts: await this.factsFor(dispute) };
   }
 
-  /** Queue: every open dispute with its recommendation, most urgent first (hours left, then amount). */
+  /** Facts never fail the caller: any error becomes `unknown`, which routes the case to human review. */
+  private async factsFor(dispute: DisputeCase["dispute"]): Promise<DisputeCase["facts"]> {
+    try {
+      return await this.paypal.getFacts(dispute);
+    } catch (error) {
+      return { unknown: true, unknownReason: factsErrorReason(error) };
+    }
+  }
+
+  /** Queue: every open dispute with its recommendation, most urgent first (hours left, then amount). At most 5 disputes in flight. */
   async queue(): Promise<Recommendation[]> {
     const disputes = await this.paypal.listOpenDisputes();
-    const cases = await Promise.all(disputes.map(async (dispute) => ({ dispute, facts: await this.paypal.getFacts(dispute) })));
-    const recs = await Promise.all(cases.map((kase) => this.recommend(kase)));
+    const recs = await mapLimit(disputes, MAX_IN_FLIGHT, async (dispute) => this.recommend({ dispute, facts: await this.factsFor(dispute) }));
     return recs.sort((a, b) => (a.hoursLeft ?? Infinity) - (b.hoursLeft ?? Infinity) || b.amount - a.amount);
   }
 

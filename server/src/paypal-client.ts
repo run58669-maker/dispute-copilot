@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { mapLimit } from "./limit.js";
 import type { Dispute, DisputeCase, OrderFacts, OutboundRequest, PayPalClient } from "./types.js";
 
 export class PayPalHttpError extends Error {
@@ -105,6 +106,8 @@ export interface SandboxConfig {
 }
 
 const ID_RE = /^[A-Za-z0-9-]{1,64}$/;
+/** At most this many disputes are fetched from PayPal at once. */
+export const MAX_IN_FLIGHT = 5;
 export const UNKNOWN_WRITE = "Status unknown — verify in PayPal Resolution Center before trying again; nothing was resent";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -231,7 +234,7 @@ export class SandboxPayPalClient implements PayPalClient {
       path = next ? this.sameOriginPath(next) : null;
     }
     // The list endpoint returns summaries; fetch details for due dates, amounts, messages and allowed actions.
-    return Promise.all([...new Set(ids)].map((id) => this.getDispute(id)));
+    return mapLimit([...new Set(ids)], MAX_IN_FLIGHT, (id) => this.getDispute(id));
   }
 
   /** Only follow pagination links that point back at the sandbox disputes API. */
@@ -255,8 +258,18 @@ export class SandboxPayPalClient implements PayPalClient {
    * Order facts from the disputed transaction: capture -> order (items, digital/physical, shipment trackers)
    * -> tracker detail (carrier, number, status). Anything PayPal does not say stays undefined.
    * If fulfilment cannot be established, returns `unknown: true` so the policy routes to human review instead of guessing.
+   * Never throws: an outage, 401, timeout or unparseable body also becomes `unknown: true` with the reason.
+   * The (up to three) fetches for one dispute run one after another.
    */
   async getFacts(dispute: Dispute): Promise<OrderFacts> {
+    try {
+      return await this.readFacts(dispute);
+    } catch (error) {
+      return { unknown: true, unknownReason: factsErrorReason(error) };
+    }
+  }
+
+  private async readFacts(dispute: Dispute): Promise<OrderFacts> {
     const txn = dispute.disputed_transactions?.find((t) => t.seller_transaction_id)?.seller_transaction_id;
     const itemTitle = dispute.disputed_transactions?.[0]?.items?.[0]?.item_description;
     const base: OrderFacts = itemTitle ? { itemTitle } : {};
@@ -317,6 +330,12 @@ export class SandboxPayPalClient implements PayPalClient {
     const result = await this.call(request.path, init);
     return { ok: true, ...result };
   }
+}
+
+/** Short, PII-free reason for facts that could not be read. */
+export function factsErrorReason(error: unknown): string {
+  if (error instanceof PayPalHttpError) return `Order facts unavailable (PayPal HTTP ${error.status}${error.reason ? `: ${error.reason}` : ""}).`;
+  return `Order facts unavailable (${error instanceof Error ? error.name : "error"}).`;
 }
 
 function safeJson(text: string): unknown {

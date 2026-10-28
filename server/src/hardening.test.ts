@@ -299,9 +299,43 @@ describe("getFacts (real mode, mocked fetch)", () => {
     expect(await client(untracked.impl).getFacts(dispute("CAP1"))).toMatchObject({ itemTitle: "Mug", unknown: true, unknownReason: expect.stringMatching(/No shipment tracking/) });
   });
 
-  it("propagates a PayPal outage instead of pretending facts are unknown", async () => {
-    const { impl } = scripted([oauth(), ["GET /v2/payments/captures/CAP1", () => json({ name: "INTERNAL_SERVER_ERROR" }, 500)]]);
-    await expect(client(impl).getFacts(dispute("CAP1"))).rejects.toMatchObject({ status: 500, reason: "INTERNAL_SERVER_ERROR" });
+  it("never throws: 500, 401, timeout and unparseable bodies all become unknown facts with a reason", async () => {
+    const outage = scripted([oauth(), ["GET /v2/payments/captures/CAP1", () => json({ name: "INTERNAL_SERVER_ERROR" }, 500)]]);
+    expect(await client(outage.impl).getFacts(dispute("CAP1"))).toMatchObject({ unknown: true, unknownReason: expect.stringMatching(/PayPal HTTP 500: INTERNAL_SERVER_ERROR/) });
+
+    const denied = scripted([["POST /v1/oauth2/token", () => json({ error: "invalid_client" }, 401)]]);
+    expect(await client(denied.impl).getFacts(dispute("CAP1"))).toMatchObject({ unknown: true, unknownReason: expect.stringMatching(/HTTP 401/) });
+
+    const hang = ((u: string, init: RequestInit) =>
+      u.endsWith("/v1/oauth2/token") ? Promise.resolve(json({ access_token: "t", expires_in: 3600 })) : new Promise((_r, rej) => init.signal?.addEventListener("abort", () => rej(new Error("aborted"))))) as unknown as typeof fetch;
+    expect(await client(hang, { timeoutMs: 20 }).getFacts(dispute("CAP1"))).toMatchObject({ unknown: true, unknownReason: expect.stringMatching(/HTTP 504: timeout/) });
+
+    const garbage = scripted([oauth(), capture, ["GET /v2/checkout/orders/ORD1", () => new Response("<html>not json", { status: 200 })]]);
+    expect(await client(garbage.impl).getFacts(dispute("CAP1"))).toMatchObject({ unknown: true });
+
+    const nulls = scripted([oauth(), ["GET /v2/payments/captures/CAP1", () => new Response("null", { status: 200 })]]);
+    expect(await client(nulls.impl).getFacts(dispute("CAP1"))).toMatchObject({ unknown: true });
+  });
+
+  it("fetches facts for one dispute sequentially (capture, then order, then tracker)", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const slow = (body: unknown) => async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+      return json(body);
+    };
+    const { impl, calls } = scripted([
+      oauth(),
+      ["GET /v2/payments/captures/CAP1", slow({ supplementary_data: { related_ids: { order_id: "ORD1" } } })],
+      ["GET /v2/checkout/orders/ORD1", slow({ purchase_units: [{ items: [{ name: "Mug" }], shipping: { trackers: [{ id: "T1", status: "SHIPPED" }] } }] })],
+      ["GET /v1/shipping/trackers/T1", slow({ carrier: "USPS", tracking_number: "1", status: "DELIVERED" })],
+    ]);
+    await client(impl).getFacts(dispute("CAP1"));
+    expect(peak).toBe(1);
+    expect(calls.map((c) => c.key.split(" ")[1]!.split("/")[2])).toEqual(["oauth2", "payments", "checkout", "shipping"]);
   });
 
   it("unknown facts route to FIGHT + human review, never a silent OFFER/ACCEPT", async () => {
@@ -410,5 +444,76 @@ describe("judge fixes", () => {
     const res = await fetch(`${url}/api/disputes`);
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "PayPal GET /v1/customer/disputes -> 503", status: 503, reason: "SERVICE_UNAVAILABLE" });
+  });
+});
+
+describe("queue resilience and concurrency", () => {
+  const disputes = (n: number): Dispute[] =>
+    Array.from({ length: n }, (_, i) => ({
+      dispute_id: `D-${i}`,
+      create_time: "2026-10-01T00:00:00Z",
+      reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+      status: "WAITING_FOR_SELLER_RESPONSE",
+      dispute_amount: { currency_code: "USD", value: "80.00" },
+    }));
+
+  it("one dispute's facts failing does not fail the queue; that row goes to human review", async () => {
+    const list = disputes(3);
+    const paypal: PayPalClient = {
+      mode: "sandbox",
+      listOpenDisputes: async () => list,
+      getDispute: async (id) => list.find((d) => d.dispute_id === id)!,
+      getFacts: async (d) => {
+        if (d.dispute_id === "D-1") throw new PayPalHttpError(500, "boom", "INTERNAL_SERVER_ERROR");
+        return { carrier: "USPS", trackingNumber: "1", trackingStatus: "DELIVERED" };
+      },
+      send: async () => ({ ok: true, status: 200, body: {} }),
+    };
+    const queue = await new DisputeCopilot(paypal, new TemplateDrafter(), () => NOW).queue();
+    expect(queue).toHaveLength(3);
+    expect(queue.find((r) => r.disputeId === "D-1")).toMatchObject({ needsHumanReview: true, action: "FIGHT", actionReason: expect.stringMatching(/PayPal HTTP 500/) });
+    expect(queue.filter((r) => r.needsHumanReview)).toHaveLength(1);
+  });
+
+  it("keeps at most 5 disputes in flight", async () => {
+    const list = disputes(12);
+    let inFlight = 0;
+    let peak = 0;
+    const paypal: PayPalClient = {
+      mode: "sandbox",
+      listOpenDisputes: async () => list,
+      getDispute: async (id) => list.find((d) => d.dispute_id === id)!,
+      getFacts: async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight -= 1;
+        return {};
+      },
+      send: async () => ({ ok: true, status: 200, body: {} }),
+    };
+    expect(await new DisputeCopilot(paypal, new TemplateDrafter(), () => NOW).queue()).toHaveLength(12);
+    expect(peak).toBe(5);
+  });
+
+  it("listOpenDisputes fetches at most 5 dispute details at once", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const { impl } = scripted([
+      oauth(),
+      ["GET /v1/customer/disputes?", () => json({ items: Array.from({ length: 12 }, (_, i) => ({ dispute_id: `D-${i}` })) })],
+      [
+        "GET /v1/customer/disputes/D-",
+        async () => {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await new Promise((r) => setTimeout(r, 5));
+          inFlight -= 1;
+          return json({ dispute_id: "D" });
+        },
+      ],
+    ]);
+    expect(await client(impl).listOpenDisputes()).toHaveLength(12);
+    expect(peak).toBe(5);
   });
 });
