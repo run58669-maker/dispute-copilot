@@ -38,6 +38,14 @@ export interface Dispute {
     items?: Array<{ item_description?: string; item_quantity?: string }>;
   }>;
   messages?: Array<{ posted_by: string; time_posted?: string; content: string }>;
+  /** What PayPal currently lets the seller do (Disputes v1). */
+  allowed_response_options?: {
+    accept_claim?: { accept_claim_types?: string[] };
+    make_offer?: { offer_types?: string[] };
+    acknowledge_return_item?: unknown;
+  };
+  /** HATEOAS links; `provide_evidence` / `make_offer` / `accept_claim` appear only when that action is available. */
+  links?: Array<{ rel?: string; href?: string; method?: string }>;
 }
 
 /**
@@ -57,6 +65,9 @@ export interface OrderFacts {
   buyerContactedSellerFirst?: boolean;
   priorPurchasesBySameBuyer?: number;
   refundId?: string;
+  /** True when the facts needed to judge fulfilment could not be read; the copilot then asks a human. */
+  unknown?: boolean;
+  unknownReason?: string;
 }
 
 export interface DisputeCase {
@@ -93,6 +104,17 @@ export interface Recommendation {
   draft: string;
   draftSource: "llm" | "template";
   llmAdjustment?: { delta: number; why: string };
+  reason: DisputeReason;
+  /** Action the rules alone chose, before the model's score nudge. */
+  rulesAction: Action;
+  /** The model's nudge flipped the action: the UI warns and approve needs an explicit confirm. */
+  actionChangedByLLM: boolean;
+  /** Facts were insufficient: recommendation is "FIGHT — human review", never a silent OFFER/ACCEPT. */
+  needsHumanReview: boolean;
+  /** Seller actions PayPal currently allows for this dispute (from status, stage, allowed_response_options, links). */
+  allowedActions: Action[];
+  paypalStatus: string;
+  lifecycleStage?: string;
 }
 
 /** What the server is about to send to PayPal for an approved action. Shown to the seller before sending. */

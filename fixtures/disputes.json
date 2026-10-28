@@ -8,9 +8,66 @@
       "status": "WAITING_FOR_SELLER_RESPONSE",
       "dispute_state": "REQUIRED_ACTION",
       "dispute_life_cycle_stage": "INQUIRY",
-      "dispute_amount": { "currency_code": "USD", "value": "128.00" },
-      "disputed_transactions": [{ "seller_transaction_id": "MOCKTXN1001", "buyer": { "name": "Sample Buyer A" }, "items": [{ "item_description": "Hand-thrown ceramic mug set (4)", "item_quantity": "1" }] }],
-      "messages": [{ "posted_by": "BUYER", "content": "Package never arrived. I want my money back." }]
+      "dispute_amount": {
+        "currency_code": "USD",
+        "value": "128.00"
+      },
+      "disputed_transactions": [
+        {
+          "seller_transaction_id": "MOCKTXN1001",
+          "buyer": {
+            "name": "Sample Buyer A"
+          },
+          "items": [
+            {
+              "item_description": "Hand-thrown ceramic mug set (4)",
+              "item_quantity": "1"
+            }
+          ]
+        }
+      ],
+      "messages": [
+        {
+          "posted_by": "BUYER",
+          "content": "Package never arrived. I want my money back."
+        }
+      ],
+      "allowed_response_options": {
+        "accept_claim": {
+          "accept_claim_types": [
+            "REFUND"
+          ]
+        },
+        "make_offer": {
+          "offer_types": [
+            "REFUND",
+            "REFUND_WITH_RETURN",
+            "REFUND_WITH_REPLACEMENT"
+          ]
+        }
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1001",
+          "method": "GET"
+        },
+        {
+          "rel": "provide_evidence",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1001/provide-evidence",
+          "method": "POST"
+        },
+        {
+          "rel": "make_offer",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1001/make-offer",
+          "method": "POST"
+        },
+        {
+          "rel": "accept_claim",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1001/accept-claim",
+          "method": "POST"
+        }
+      ]
     },
     "facts": {
       "itemTitle": "Hand-thrown ceramic mug set (4)",
@@ -34,9 +91,66 @@
       "status": "WAITING_FOR_SELLER_RESPONSE",
       "dispute_state": "REQUIRED_ACTION",
       "dispute_life_cycle_stage": "INQUIRY",
-      "dispute_amount": { "currency_code": "USD", "value": "64.50" },
-      "disputed_transactions": [{ "seller_transaction_id": "MOCKTXN1002", "buyer": { "name": "Sample Buyer B" }, "items": [{ "item_description": "Linen tote bag, natural", "item_quantity": "1" }] }],
-      "messages": [{ "posted_by": "BUYER", "content": "The color is more grey than the photos." }]
+      "dispute_amount": {
+        "currency_code": "USD",
+        "value": "64.50"
+      },
+      "disputed_transactions": [
+        {
+          "seller_transaction_id": "MOCKTXN1002",
+          "buyer": {
+            "name": "Sample Buyer B"
+          },
+          "items": [
+            {
+              "item_description": "Linen tote bag, natural",
+              "item_quantity": "1"
+            }
+          ]
+        }
+      ],
+      "messages": [
+        {
+          "posted_by": "BUYER",
+          "content": "The color is more grey than the photos."
+        }
+      ],
+      "allowed_response_options": {
+        "accept_claim": {
+          "accept_claim_types": [
+            "REFUND"
+          ]
+        },
+        "make_offer": {
+          "offer_types": [
+            "REFUND",
+            "REFUND_WITH_RETURN",
+            "REFUND_WITH_REPLACEMENT"
+          ]
+        }
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1002",
+          "method": "GET"
+        },
+        {
+          "rel": "provide_evidence",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1002/provide-evidence",
+          "method": "POST"
+        },
+        {
+          "rel": "make_offer",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1002/make-offer",
+          "method": "POST"
+        },
+        {
+          "rel": "accept_claim",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1002/accept-claim",
+          "method": "POST"
+        }
+      ]
     },
     "facts": {
       "itemTitle": "Linen tote bag, natural",
@@ -58,8 +172,48 @@
       "status": "WAITING_FOR_SELLER_RESPONSE",
       "dispute_state": "REQUIRED_ACTION",
       "dispute_life_cycle_stage": "CHARGEBACK",
-      "dispute_amount": { "currency_code": "USD", "value": "899.00" },
-      "disputed_transactions": [{ "seller_transaction_id": "MOCKTXN1003", "buyer": { "name": "Sample Buyer C" }, "items": [{ "item_description": "Refurbished mirrorless camera body", "item_quantity": "1" }] }]
+      "dispute_amount": {
+        "currency_code": "USD",
+        "value": "899.00"
+      },
+      "disputed_transactions": [
+        {
+          "seller_transaction_id": "MOCKTXN1003",
+          "buyer": {
+            "name": "Sample Buyer C"
+          },
+          "items": [
+            {
+              "item_description": "Refurbished mirrorless camera body",
+              "item_quantity": "1"
+            }
+          ]
+        }
+      ],
+      "allowed_response_options": {
+        "accept_claim": {
+          "accept_claim_types": [
+            "REFUND"
+          ]
+        }
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1003",
+          "method": "GET"
+        },
+        {
+          "rel": "provide_evidence",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1003/provide-evidence",
+          "method": "POST"
+        },
+        {
+          "rel": "accept_claim",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1003/accept-claim",
+          "method": "POST"
+        }
+      ]
     },
     "facts": {
       "itemTitle": "Refurbished mirrorless camera body",
@@ -81,9 +235,66 @@
       "status": "WAITING_FOR_SELLER_RESPONSE",
       "dispute_state": "REQUIRED_ACTION",
       "dispute_life_cycle_stage": "INQUIRY",
-      "dispute_amount": { "currency_code": "USD", "value": "42.00" },
-      "disputed_transactions": [{ "seller_transaction_id": "MOCKTXN1004", "buyer": { "name": "Sample Buyer D" }, "items": [{ "item_description": "Enamel pin bundle", "item_quantity": "3" }] }],
-      "messages": [{ "posted_by": "BUYER", "content": "Ordered 3 weeks ago, nothing." }]
+      "dispute_amount": {
+        "currency_code": "USD",
+        "value": "42.00"
+      },
+      "disputed_transactions": [
+        {
+          "seller_transaction_id": "MOCKTXN1004",
+          "buyer": {
+            "name": "Sample Buyer D"
+          },
+          "items": [
+            {
+              "item_description": "Enamel pin bundle",
+              "item_quantity": "3"
+            }
+          ]
+        }
+      ],
+      "messages": [
+        {
+          "posted_by": "BUYER",
+          "content": "Ordered 3 weeks ago, nothing."
+        }
+      ],
+      "allowed_response_options": {
+        "accept_claim": {
+          "accept_claim_types": [
+            "REFUND"
+          ]
+        },
+        "make_offer": {
+          "offer_types": [
+            "REFUND",
+            "REFUND_WITH_RETURN",
+            "REFUND_WITH_REPLACEMENT"
+          ]
+        }
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1004",
+          "method": "GET"
+        },
+        {
+          "rel": "provide_evidence",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1004/provide-evidence",
+          "method": "POST"
+        },
+        {
+          "rel": "make_offer",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1004/make-offer",
+          "method": "POST"
+        },
+        {
+          "rel": "accept_claim",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1004/accept-claim",
+          "method": "POST"
+        }
+      ]
     },
     "facts": {
       "itemTitle": "Enamel pin bundle",
@@ -101,8 +312,60 @@
       "status": "WAITING_FOR_SELLER_RESPONSE",
       "dispute_state": "REQUIRED_ACTION",
       "dispute_life_cycle_stage": "INQUIRY",
-      "dispute_amount": { "currency_code": "USD", "value": "9.99" },
-      "disputed_transactions": [{ "seller_transaction_id": "MOCKTXN1005", "buyer": { "name": "Sample Buyer E" }, "items": [{ "item_description": "Printable planner (PDF)", "item_quantity": "1" }] }]
+      "dispute_amount": {
+        "currency_code": "USD",
+        "value": "9.99"
+      },
+      "disputed_transactions": [
+        {
+          "seller_transaction_id": "MOCKTXN1005",
+          "buyer": {
+            "name": "Sample Buyer E"
+          },
+          "items": [
+            {
+              "item_description": "Printable planner (PDF)",
+              "item_quantity": "1"
+            }
+          ]
+        }
+      ],
+      "allowed_response_options": {
+        "accept_claim": {
+          "accept_claim_types": [
+            "REFUND"
+          ]
+        },
+        "make_offer": {
+          "offer_types": [
+            "REFUND",
+            "REFUND_WITH_RETURN",
+            "REFUND_WITH_REPLACEMENT"
+          ]
+        }
+      },
+      "links": [
+        {
+          "rel": "self",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1005",
+          "method": "GET"
+        },
+        {
+          "rel": "provide_evidence",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1005/provide-evidence",
+          "method": "POST"
+        },
+        {
+          "rel": "make_offer",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1005/make-offer",
+          "method": "POST"
+        },
+        {
+          "rel": "accept_claim",
+          "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-MOCK-1005/accept-claim",
+          "method": "POST"
+        }
+      ]
     },
     "facts": {
       "itemTitle": "Printable planner (PDF)",

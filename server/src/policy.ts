@@ -103,6 +103,22 @@ export function offerAmount(money: Money): Money {
   return { currency_code: money.currency_code, value: value.toFixed(2) };
 }
 
+/**
+ * Seller actions PayPal allows right now. Writes need status WAITING_FOR_SELLER_RESPONSE; then
+ * provide-evidence needs the `provide_evidence` link, make-offer a REFUND offer type (or `make_offer` link),
+ * accept-claim the `accept_claim` option (or link). No signal means not allowed.
+ */
+export function allowedActions(dispute: Dispute): Action[] {
+  if (dispute.status !== "WAITING_FOR_SELLER_RESPONSE") return [];
+  const rels = new Set((dispute.links ?? []).map((link) => link.rel));
+  const options = dispute.allowed_response_options ?? {};
+  const allowed: Action[] = [];
+  if (rels.has("provide_evidence")) allowed.push("FIGHT");
+  if (options.make_offer?.offer_types?.includes("REFUND") || (rels.has("make_offer") && !options.make_offer)) allowed.push("OFFER");
+  if (options.accept_claim || rels.has("accept_claim")) allowed.push("ACCEPT");
+  return allowed;
+}
+
 export function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
@@ -126,14 +142,15 @@ export function buildRequest(
   if (note.length === 0) throw new Error("Draft is empty.");
   const base = `/v1/customer/disputes/${disputeId}`;
   if (action === "FIGHT") {
+    // The seller's note goes once, on the first item; every other item carries its own one-line explanation.
     const evidences = plan
       .filter((item) => item.have)
-      .map((item) => ({
+      .map((item, index) => ({
         evidence_type: item.evidence_type,
         ...(item.evidence_type === "PROOF_OF_FULFILLMENT" && facts.trackingNumber && facts.carrier
           ? { evidence_info: { tracking_info: [{ carrier_name: facts.carrier, tracking_number: facts.trackingNumber }] } }
           : {}),
-        notes: note,
+        notes: index === 0 ? note : item.why,
       }));
     if (evidences.length === 0) throw new Error("No evidence on hand to submit; choose OFFER or ACCEPT.");
     return { method: "POST", path: `${base}/provide-evidence`, contentType: "multipart/form-data", body: { input: { evidences } } };
