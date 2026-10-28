@@ -12,6 +12,7 @@ interface Rec {
   action: Action;
   actionReason: string;
   offerAmount?: { currency_code: string; value: string };
+  assessment: string;
   draft: string;
   draftSource: "llm" | "template";
   llmAdjustment?: { delta: number; why: string };
@@ -42,6 +43,8 @@ function showCase(rec: Rec): void {
     <p><span class="action ${rec.action}">${rec.action}</span> · win score ${rec.score}/100 · ${rec.amount.toFixed(2)} ${esc(rec.currency)}
       ${rec.hoursLeft === null ? "" : `· ${rec.hoursLeft} h left`}</p>
     <p>${esc(rec.actionReason)}</p>
+    <h3>Assessment <span class="hint">(${rec.draftSource === "llm" ? "AI" : "template"})</span></h3>
+    <p class="assessment">${esc(rec.assessment)}</p>
     ${rec.llmAdjustment ? `<p class="note">AI adjusted the score ${rec.llmAdjustment.delta > 0 ? "+" : ""}${rec.llmAdjustment.delta}: ${esc(rec.llmAdjustment.why)}</p>` : ""}
     <details><summary>Why this score</summary><ul class="factors">${rec.factors.map((f) => `<li>${esc(f.label)}: ${f.points >= 0 ? "+" : ""}${f.points}</li>`).join("")}</ul></details>
     <h3>Evidence PayPal asks for</h3>

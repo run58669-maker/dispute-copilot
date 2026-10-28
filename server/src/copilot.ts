@@ -45,6 +45,7 @@ export class DisputeCopilot {
       action: final.action,
       actionReason: final.reason,
       ...(final.action === "OFFER" ? { offerAmount: offer } : {}),
+      assessment: drafted.assessment,
       draft: drafted.draft,
       draftSource: drafted.source,
       ...(drafted.adjustment && drafted.adjustment.delta !== 0 ? { llmAdjustment: drafted.adjustment } : {}),

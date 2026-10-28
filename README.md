@@ -23,12 +23,13 @@ Copy `.env.example` to `.env` (or set the variables in your shell):
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | Sandbox REST app from developer.paypal.com → Apps & Credentials → Sandbox |
 | `PAYPAL_BASE_URL` | Must be `https://api-m.sandbox.paypal.com` |
 | `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | Any OpenAI-compatible chat endpoint. Default: Gemini 2.5 Flash (free tier) |
+| `MODE` | `mock` forces the sample disputes even when PayPal keys are set (the public demo runs this way) |
 
 ## How it decides
 
 1. **Evidence plan** — maps the dispute `reason` to PayPal `evidence_type` values and marks which ones the order facts already cover.
 2. **Win score (0–100)** — a transparent rule score; every point is a labelled factor.
-3. **LLM review** — the model may move the score by at most ±15 and must say why; it drafts the note using only the listed facts. Bad or failed model output falls back to the template.
+3. **LLM writes, code decides** — Gemini gets the code-chosen action, the score factors, the evidence plan and the facts (buyer messages fenced as untrusted data; prompt in `buildPrompt`, `server/src/drafter.ts`). It returns a one-paragraph **assessment** for the seller and the **draft** PayPal will receive, and may suggest a score nudge of at most ±15 with a reason; code clamps it and re-runs the thresholds. Successful drafts are cached per dispute state so reloads do not spend the free quota. Any model failure (HTTP error, timeout, malformed JSON) falls back to the deterministic template.
 4. **Action** — FIGHT ≥ 60, OFFER 30–59 (half the amount), ACCEPT < 30 or amount under 15.
 5. **Human gate** — preview → approve → `provide-evidence` / `make-offer` / `accept-claim`.
 

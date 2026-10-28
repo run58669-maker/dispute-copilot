@@ -11,7 +11,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..", "..");
 
 export function createPayPal(env: NodeJS.ProcessEnv): PayPalClient {
-  if (env.PAYPAL_CLIENT_ID && env.PAYPAL_CLIENT_SECRET) {
+  // MODE=mock forces fixtures even when sandbox credentials are present (public demo deploy).
+  if (env.MODE !== "mock" && env.PAYPAL_CLIENT_ID && env.PAYPAL_CLIENT_SECRET) {
     return new SandboxPayPalClient({
       clientId: env.PAYPAL_CLIENT_ID,
       clientSecret: env.PAYPAL_CLIENT_SECRET,

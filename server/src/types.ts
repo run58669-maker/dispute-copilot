@@ -88,6 +88,8 @@ export interface Recommendation {
   action: Action;
   actionReason: string;
   offerAmount?: Money;
+  /** One-paragraph case assessment (LLM, or deterministic template). */
+  assessment: string;
   draft: string;
   draftSource: "llm" | "template";
   llmAdjustment?: { delta: number; why: string };

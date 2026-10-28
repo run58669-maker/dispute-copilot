@@ -31,3 +31,4 @@ button, select { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow: auto; font-size: 12px; max-height: 240px; }
 .note { color: var(--muted); font-size: 13px; }
+.assessment { line-height: 1.5; margin: 4px 0 12px; }
