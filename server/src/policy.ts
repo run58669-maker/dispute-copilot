@@ -14,7 +14,7 @@ const UNITS_PER_USD: Record<string, number> = { JPY: 150, HUF: 360, TWD: 32 };
 export const OFFER_SHARE = 0.5;
 /** PayPal limit on evidence `notes`, offer `note` and accept-claim `note`. */
 export const NOTE_MAX = 2000;
-/** The LLM may move the rule score by at most this much, and must say why. */
+/** Upper bound applied when parsing a legacy "delta" field in a model reply. The delta is ignored: the score is rule-based only. */
 export const LLM_MAX_ADJUST = 15;
 
 export function hoursLeft(dispute: Dispute, now: Date): number | null {
@@ -97,7 +97,23 @@ export function ruleScore(dispute: Dispute, facts: OrderFacts): { score: number;
     factors.push({ label: "High value without signature confirmation", points: -10 });
   }
   const raw = factors.reduce((sum, factor) => sum + factor.points, 0);
-  return { score: clamp(raw, 0, 100), factors };
+  const score = clamp(raw, 0, 100);
+  // The factors always add up to the score shown.
+  if (score !== raw) factors.push({ label: "Limited to the 0-100 range", points: score - raw });
+  return { score, factors };
+}
+
+const LADDER: Action[] = ["FIGHT", "OFFER", "ACCEPT"];
+
+/**
+ * The recommendation limited to what PayPal allows now: the policy action if allowed, else the next lower action on
+ * FIGHT > OFFER > ACCEPT, else the next higher. `allowed` empty means no seller action: the action is informational only.
+ */
+export function restrictToAllowed(action: Action, allowed: Action[]): Action {
+  if (allowed.length === 0 || allowed.includes(action)) return action;
+  const start = LADDER.indexOf(action);
+  const lower = LADDER.slice(start + 1).find((a) => allowed.includes(a));
+  return lower ?? [...LADDER.slice(0, start)].reverse().find((a) => allowed.includes(a)) ?? action;
 }
 
 export function decideAction(score: number, amount: number): { action: Action; reason: string } {
