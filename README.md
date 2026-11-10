@@ -4,7 +4,7 @@ An AI copilot for small PayPal sellers. It pulls every open dispute from the Pay
 
 **Live demo:** https://dispute-copilot-7vbm.onrender.com (Render free tier: first request after idle can take ~50 s)
 
-> **Honest status:** the live demo runs in **mock mode** (five sample disputes from `fixtures/disputes.json`) until PayPal sandbox credentials are connected. AI drafting (Gemini 2.5 Flash) is on only when the deploy has `LLM_API_KEY`; check `/api/health` — `"drafter":"llm"` means AI drafts, `"template"` means the deterministic fallback, and the header badge says which. The public demo is **read-only**: Preview works, Approve returns 403 because no `ADMIN_TOKEN` is set there. The real-API code paths (OAuth, pagination, order/tracking facts, multipart evidence upload, read retries) are unit-tested against mocked PayPal responses, not yet against the live sandbox.
+> **Honest status:** the live demo runs against the **PayPal sandbox** (`/api/health` shows `"paypal":"sandbox"`). Its queue is real sandbox disputes on our test business account (JPY, Japan): buyer claims opened from a sandbox personal account for item not received, not as described and unauthorised, with real sandbox orders, captures and shipment trackers behind them. AI drafting (Gemini 2.5 Flash) is on only when the deploy has `LLM_API_KEY`; `"drafter":"llm"` means AI drafts, `"template"` means the deterministic fallback (also used per case when the free Gemini quota is busy), and the header badge says which. The public demo is **read-only**: Preview builds the exact PayPal request, Approve returns 403 because no `ADMIN_TOKEN` is set there. Verified against the sandbox on 2026-11-10: OAuth, dispute list and detail, capture → order → tracker facts, and one `provide-evidence` multipart submission (sent from a local run with `ADMIN_TOKEN`; PayPal answered 200 and moved the case to review). `make-offer` and `accept-claim` have been previewed against real disputes but not sent.
 
 ![Dispute queue](docs/screenshots/02_queue_live_render.png)
 
@@ -29,8 +29,13 @@ Copy `.env.example` to `.env` (or set the variables in your shell):
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | Sandbox REST app from developer.paypal.com → Apps & Credentials → Sandbox |
 | `PAYPAL_BASE_URL` | Must be `https://api-m.sandbox.paypal.com` |
 | `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | Any OpenAI-compatible chat endpoint. Default: Gemini 2.5 Flash (free tier) |
-| `MODE` | `mock` forces the sample disputes even when PayPal keys are set (the public demo runs this way) |
+| `MODE` | `mock` forces the sample disputes even when PayPal keys are set. On Render it is set in the dashboard (`render.yaml` does not pin it); the hosted demo uses `sandbox` |
 | `ADMIN_TOKEN` | Required for Approve & send (header `x-admin-token`; the UI has an Unlock field that keeps it in memory only). Unset = the server refuses every write with 403 |
+
+## Testing it as a judge
+
+- **Hosted demo (no setup):** open the live demo. The queue shows our sandbox disputes with deadline, amount, win score, recommended action and what PayPal currently allows. Click a row for the score breakdown, evidence plan, AI assessment and draft; **Preview request** shows the exact PayPal call (path and JSON/multipart body). Cases under PayPal review are listed with "no seller action", as PayPal reports them. Sending is locked on the public server (403), so nobody can change our sandbox cases.
+- **Your own sandbox, with sending:** create a sandbox REST app at developer.paypal.com (Apps & Credentials → Sandbox), set `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` and an `ADMIN_TOKEN` of your choice, `npm start`, and paste the token into the Unlock field. To get disputes: pay a sandbox order with your sandbox personal account, then log in to sandbox.paypal.com as that buyer and use *Report a problem* (Resolution Center) on the payment. New cases can take a few minutes to appear in the API.
 
 ## How it decides
 
@@ -47,7 +52,7 @@ Copy `.env.example` to `.env` (or set the variables in your shell):
 - Writes need `ADMIN_TOKEN`; without it the server is read-only. Per-IP rate limit on `/api`: 30 reads/min, 5 writes/min.
 - PayPal calls: 15 s timeout. Reads (GET) get one retry with backoff on 429/5xx. Writes (make-offer, provide-evidence, accept-claim) are sent exactly once and never retried: on a timeout or 5xx the server answers 502 "Status unknown — verify in PayPal Resolution Center", because PayPal may already have applied it. Errors surface as `{status, reason}` with only PayPal's `name`, `message` and `details[].issue`.
 - `Cache-Control: no-store` on the API; CSP (`self` only, plus `data:` for the grid's icon font), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`.
-- Sandbox only: the client refuses any non-sandbox PayPal URL. The mock demo resets approvals every 10 minutes.
+- Sandbox only: the client refuses any non-sandbox PayPal URL. In mock mode the demo resets approvals every 10 minutes.
 
 ## PayPal APIs used
 
