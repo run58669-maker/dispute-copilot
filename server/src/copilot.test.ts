@@ -279,3 +279,71 @@ describe("stable score and allowed-action recommendation", () => {
     expect(rec.actionReason).toMatch(/^Informational only/);
   });
 });
+
+describe("informational cases (PayPal allows no seller action)", () => {
+  const informational = async (): Promise<DraftInput> => {
+    const input = await draftInput("PP-D-MOCK-1002");
+    input.kase.dispute.status = "UNDER_REVIEW";
+    return { ...input, action: "OFFER", offer: { currency_code: "USD", value: "32.25" }, informational: true, paypalStatus: "UNDER_REVIEW" };
+  };
+
+  it("prompt says PayPal is reviewing, forbids offers/acceptance claims, and lists signed factors with the final score", async () => {
+    const input = await informational();
+    const { system, user } = buildPrompt(input);
+    expect(system).toContain("PayPal allows NO seller action");
+    expect(system).toContain("PayPal is reviewing the case and no seller response can be sent now");
+    expect(system).toContain("prepared note");
+    expect(system).toContain("must not claim that an offer, acceptance, refund or evidence is being made or submitted now");
+    expect(system).not.toContain("the offer note to the buyer the seller will submit");
+    expect(user).toContain("PayPal status: UNDER_REVIEW. PayPal allows no seller action now");
+    expect(user).not.toContain("refund offer 32.25");
+    expect(user).toContain(`Final rule score: ${input.score}/100.`);
+  });
+
+  it("normal prompt has signed factor lines, the final score and the no-embellishment rules", async () => {
+    const input = await draftInput("PP-D-MOCK-1001");
+    const { system, user } = buildPrompt(input);
+    expect(user).toContain("Score factors (each line is one factor, signed points):");
+    for (const f of input.factors) expect(user).toContain(`${f.points >= 0 ? "+" : ""}${f.points} ${f.label}`);
+    expect(user).toContain(`Final rule score: ${input.score}/100.`);
+    expect(system).toContain("Cite only the listed facts and factors");
+    expect(system).toContain("Do not add adjectives or details about the item, the buyer or the seller");
+    expect(system).toContain("Do not restate points arithmetic");
+    expect(system).not.toContain("PayPal allows NO seller action");
+  });
+
+  it("template assessment and draft claim no offer, refund or submission", async () => {
+    const input = await informational();
+    const result = await new TemplateDrafter().draft(input);
+    expect(result.assessment).toContain("PayPal is reviewing");
+    expect(result.assessment).toContain("no seller response can be sent now");
+    expect(result.assessment).toContain("have ready");
+    expect(result.draft).toMatch(/^Prepared note, not sent/);
+    expect(result.draft).toContain("If PayPal asks for more information");
+    for (const text of [result.assessment, result.draft]) expect(text).not.toMatch(/offer a|we offer|partial refund|we accept|aligns with/i);
+  });
+
+  it("the copilot marks UNDER_REVIEW disputes informational", async () => {
+    let seen: DraftInput | undefined;
+    const spy: Drafter = { kind: "template", draft: async (i) => ((seen = i), new TemplateDrafter().draft(i)) };
+    const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), spy, () => NOW);
+    const loaded = await copilot.loadCase("PP-D-MOCK-1001");
+    await copilot.recommend({ ...loaded, dispute: { ...loaded.dispute, status: "UNDER_REVIEW" } });
+    expect(seen).toMatchObject({ informational: true, paypalStatus: "UNDER_REVIEW" });
+    await copilot.recommend(await copilot.loadCase("PP-D-MOCK-1001"));
+    expect(seen?.informational).toBeUndefined();
+  });
+
+  it("the cache key includes the informational flag", async () => {
+    let calls = 0;
+    const inner = llmReply({ assessment: "a", draft: "d" });
+    const counting = (async (...args: Parameters<typeof fetch>) => ((calls += 1), inner(...args))) as typeof fetch;
+    const drafter = new LlmDrafter({ apiKey: "k", baseUrl: "https://llm.example", model: "m" }, counting);
+    const base = await draftInput("PP-D-MOCK-1001");
+    await drafter.draft(base);
+    await drafter.draft(base);
+    expect(calls).toBe(1);
+    await drafter.draft({ ...base, informational: true, paypalStatus: "UNDER_REVIEW" });
+    expect(calls).toBe(2);
+  });
+});

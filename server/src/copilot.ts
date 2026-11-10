@@ -87,7 +87,15 @@ export class DisputeCopilot {
     if (allowed.length === 0) actionReason = `Informational only: PayPal allows no seller action now (status ${dispute.status}). ${actionReason}`;
     const offer = offerAmount(dispute.dispute_amount);
     // The model writes text only (assessment, draft). It does not change the score or the action.
-    const drafted = await this.drafter.draft({ kase, action, score, factors, plan, ...(action === "OFFER" ? { offer } : {}) });
+    const drafted = await this.drafter.draft({
+      kase,
+      action,
+      score,
+      factors,
+      plan,
+      ...(action === "OFFER" ? { offer } : {}),
+      ...(allowed.length === 0 ? { informational: true, paypalStatus: dispute.status } : {}),
+    });
     return {
       disputeId: dispute.dispute_id,
       hoursLeft: hoursLeft(dispute, this.now()),
