@@ -14,8 +14,6 @@ const UNITS_PER_USD: Record<string, number> = { JPY: 150, HUF: 360, TWD: 32 };
 export const OFFER_SHARE = 0.5;
 /** PayPal limit on evidence `notes`, offer `note` and accept-claim `note`. */
 export const NOTE_MAX = 2000;
-/** Upper bound applied when parsing a legacy "delta" field in a model reply. The delta is ignored: the score is rule-based only. */
-export const LLM_MAX_ADJUST = 15;
 
 export function hoursLeft(dispute: Dispute, now: Date): number | null {
   if (!dispute.seller_response_due_date) return null;

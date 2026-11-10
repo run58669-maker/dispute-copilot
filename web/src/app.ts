@@ -13,7 +13,6 @@ interface Rec {
   action: Action;
   actionReason: string;
   rulesAction: Action;
-  actionChangedByLLM: boolean;
   needsHumanReview: boolean;
   allowedActions: Action[];
   paypalStatus: string;
@@ -22,7 +21,6 @@ interface Rec {
   assessment: string;
   draft: string;
   draftSource: "llm" | "template";
-  llmAdjustment?: { delta: number; why: string };
 }
 
 /** JPY, HUF and TWD have no minor unit; everything else shows cents. */
@@ -90,19 +88,16 @@ function showCase(rec: Rec): void {
     <h2>${esc(rec.disputeId)}</h2>
     <p><span class="action ${rec.action}">${rec.action}</span> · win score ${rec.score}/100 · ${money(rec.amount, rec.currency)} ${esc(rec.currency)}
       ${rec.hoursLeft === null ? "" : `· ${rec.hoursLeft} h left`}</p>
-    ${rec.actionChangedByLLM ? `<p class="alert">AI changed recommendation — confirm. Rules alone said <b>${rec.rulesAction}</b>; the model's score nudge moved it to <b>${rec.action}</b>.</p>` : ""}
     ${rec.needsHumanReview ? '<p class="alert">Insufficient facts — a human must review before any response.</p>' : ""}
     <p>${esc(rec.actionReason)}</p>
     <p class="note">PayPal status ${esc(rec.paypalStatus)}${rec.lifecycleStage ? ` · stage ${esc(rec.lifecycleStage)}` : ""} · PayPal currently allows: <b>${rec.allowedActions.length ? rec.allowedActions.join(", ") : "no seller action"}</b></p>
     <h3>Assessment <span class="hint">(${rec.draftSource === "llm" ? "AI" : "template"})</span></h3>
     <p class="assessment">${esc(rec.assessment)}</p>
-    ${rec.llmAdjustment ? `<p class="note">AI adjusted the score ${rec.llmAdjustment.delta > 0 ? "+" : ""}${rec.llmAdjustment.delta}: ${esc(rec.llmAdjustment.why)}</p>` : ""}
     <details><summary>Why this score</summary><ul class="factors">${rec.factors.map((f) => `<li>${esc(f.label)}: ${f.points >= 0 ? "+" : ""}${f.points}</li>`).join("")}</ul></details>
     <h3>Evidence PayPal asks for</h3>
     <ul class="plan">${rec.evidencePlan.map((p) => `<li class="${p.have ? "" : "missing"}">${p.have ? "✓" : "✗"} ${esc(p.evidence_type)} — ${esc(p.why)}</li>`).join("")}</ul>
     <h3>Draft <span class="hint">(${rec.draftSource === "llm" ? "AI" : "template"}; edit freely)</span></h3>
     <textarea id="draft">${esc(rec.draft)}</textarea>
-    ${rec.actionChangedByLLM ? `<label class="confirm"><input type="checkbox" id="confirm-ai"> AI changed recommendation (${rec.rulesAction} → ${rec.action}) — confirm</label>` : ""}
     <div class="row">
       <label>Action <select id="action">${(["FIGHT", "OFFER", "ACCEPT"] as const)
         .map((a) => `<option ${a === rec.action && allowed.has(a) ? "selected" : ""} ${allowed.has(a) ? "" : "disabled"}>${a}${allowed.has(a) ? "" : " (not allowed)"}</option>`)
@@ -115,7 +110,6 @@ function showCase(rec: Rec): void {
   const out = caseEl.querySelector("#out") as HTMLPreElement;
   const gate = caseEl.querySelector("#gate") as HTMLElement;
   const approve = caseEl.querySelector("#approve") as HTMLButtonElement;
-  const confirmBox = caseEl.querySelector("#confirm-ai") as HTMLInputElement | null;
   let previewed = false;
   let previewId = "";
   const read = () => ({
@@ -125,7 +119,6 @@ function showCase(rec: Rec): void {
   const refresh = () => {
     const reasons: string[] = [];
     if (!previewed) reasons.push("preview first");
-    if (confirmBox && !confirmBox.checked) reasons.push("tick the AI-change confirmation");
     if (serverWrites === "read-only") reasons.push("this demo server is read-only");
     else if (!adminToken) reasons.push("unlock with the admin token");
     approve.disabled = reasons.length > 0;
@@ -138,12 +131,11 @@ function showCase(rec: Rec): void {
   };
   caseEl.querySelector("#action")?.addEventListener("change", invalidate);
   caseEl.querySelector("#draft")?.addEventListener("input", invalidate);
-  confirmBox?.addEventListener("change", refresh);
   refresh();
   caseEl.querySelector("#preview")?.addEventListener("click", async () => {
     out.hidden = false;
     try {
-      const preview = await api<{ request: unknown; previewId: string; actionChangedByLLM: boolean }>(`/api/disputes/${encodeURIComponent(rec.disputeId)}/preview`, read());
+      const preview = await api<{ request: unknown; previewId: string }>(`/api/disputes/${encodeURIComponent(rec.disputeId)}/preview`, read());
       out.textContent = JSON.stringify(preview.request, null, 2);
       previewId = preview.previewId;
       previewed = true; // Approve sends exactly this preview, once.
@@ -156,7 +148,7 @@ function showCase(rec: Rec): void {
   approve.addEventListener("click", async () => {
     approve.disabled = true;
     try {
-      const body = { ...read(), previewId, ...(confirmBox?.checked ? { confirmed: true } : {}) };
+      const body = { ...read(), previewId };
       const result = await api<{ status: number }>(`/api/disputes/${encodeURIComponent(rec.disputeId)}/approve`, body, true);
       current = null;
       caseEl.innerHTML = `<p class="sent">Sent ${esc(rec.disputeId)}. PayPal answered HTTP ${result.status}.</p>${EMPTY}`;

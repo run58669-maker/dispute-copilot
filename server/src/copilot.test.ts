@@ -40,8 +40,8 @@ describe("copilot on mock fixtures", () => {
 });
 
 describe("LLM drafter", () => {
-  it("parses fenced JSON and clamps the score adjustment", () => {
-    expect(parseLlmJson('```json\n{"draft":"hi","delta":40,"why":"w"}\n```')).toEqual({ assessment: "", draft: "hi", delta: 15, why: "w" });
+  it("parses fenced JSON and ignores a legacy delta", () => {
+    expect(parseLlmJson('```json\n{"draft":"hi","delta":40,"why":"w"}\n```')).toEqual({ assessment: "", draft: "hi" });
     expect(() => parseLlmJson('{"delta":1}')).toThrow();
   });
 
@@ -57,7 +57,6 @@ describe("LLM drafter", () => {
     const rec = await copilot.recommend(kase);
     expect(rec.score).toBe(ruleScore(kase.dispute, kase.facts).score);
     expect(rec.draftSource).toBe("llm");
-    expect(rec.llmAdjustment).toBeUndefined();
     expect(calls).toHaveLength(1);
   });
 
@@ -218,10 +217,10 @@ describe("stable score and allowed-action recommendation", () => {
     } as DisputeCase["dispute"],
     facts: { unknown: true, unknownReason: "no tracker on the order" },
   });
-  /** Returns different text, and a different delta, on every call. */
+  /** Returns different text on every call. */
   const noisyDrafter = (): Drafter => {
     let n = 0;
-    return { draft: async () => ({ assessment: `assessment ${++n}`, draft: `draft ${n}`, source: "llm" as const, adjustment: { delta: n % 2 ? -15 : 15, why: `why ${n}` } }) };
+    return { draft: async () => ({ assessment: `assessment ${++n}`, draft: `draft ${n}`, source: "llm" as const }) };
   };
 
   it("same input twice gives the same score and action although the LLM text differs", async () => {

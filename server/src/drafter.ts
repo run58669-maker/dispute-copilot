@@ -1,4 +1,4 @@
-import { LLM_MAX_ADJUST, clamp, truncateNote } from "./policy.js";
+import { truncateNote } from "./policy.js";
 import type { Action, DisputeCase, EvidenceItem, Money, ScoreFactor } from "./types.js";
 
 export interface DraftInput {
@@ -16,7 +16,6 @@ export interface DraftResult {
   /** Text submitted to PayPal (evidence notes, offer note or accept-claim note). */
   draft: string;
   source: "llm" | "template";
-  adjustment?: { delta: number; why: string };
 }
 
 export interface Drafter {
@@ -178,12 +177,11 @@ export class LlmDrafter implements Drafter {
   }
 }
 
-/** Strict parse of the model reply: unknown shapes throw (caller falls back), delta is clamped, lengths capped. */
-export function parseLlmJson(content: string): { assessment: string; draft: string; delta: number; why: string } {
+/** Strict parse of the model reply: unknown shapes throw (caller falls back), lengths capped. */
+export function parseLlmJson(content: string): { assessment: string; draft: string } {
   const stripped = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "");
   const value = JSON.parse(stripped) as Record<string, unknown>;
   if (typeof value.draft !== "string" || value.draft.trim() === "") throw new Error("LLM draft missing");
-  const delta = typeof value.delta === "number" && Number.isFinite(value.delta) ? Math.round(value.delta) : 0;
   const assessment = typeof value.assessment === "string" ? value.assessment.trim().slice(0, ASSESSMENT_MAX) : "";
-  return { assessment, draft: value.draft, delta: clamp(delta, -LLM_MAX_ADJUST, LLM_MAX_ADJUST), why: typeof value.why === "string" ? value.why.slice(0, 300) : "" };
+  return { assessment, draft: value.draft };
 }

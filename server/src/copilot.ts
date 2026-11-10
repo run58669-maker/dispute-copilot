@@ -15,7 +15,6 @@ export interface PreviewResult {
   expiresAt: string;
   recommendedAction: Action;
   rulesAction: Action;
-  actionChangedByLLM: boolean;
 }
 
 interface PreviewEntry {
@@ -23,7 +22,6 @@ interface PreviewEntry {
   action: Action;
   draft: string;
   request: OutboundRequest;
-  actionChangedByLLM: boolean;
   rulesAction: Action;
   recommendedAction: Action;
   expiresAt: number;
@@ -102,7 +100,6 @@ export class DisputeCopilot {
       action,
       actionReason,
       rulesAction: policy.action,
-      actionChangedByLLM: false,
       needsHumanReview: Boolean(facts.unknown),
       allowedActions: allowed,
       paypalStatus: dispute.status,
@@ -134,7 +131,6 @@ export class DisputeCopilot {
       action,
       draft,
       request,
-      actionChangedByLLM: rec.actionChangedByLLM,
       rulesAction: rec.rulesAction,
       recommendedAction: rec.action,
       expiresAt: this.clock() + PREVIEW_TTL_MS,
@@ -146,20 +142,18 @@ export class DisputeCopilot {
       expiresAt: new Date(entry.expiresAt).toISOString(),
       recommendedAction: entry.recommendedAction,
       rulesAction: entry.rulesAction,
-      actionChangedByLLM: entry.actionChangedByLLM,
     };
   }
 
   /**
    * Human-approved send of the last preview: no LLM call, no rebuild, the client never supplies a raw PayPal request.
    * No matching preview (missing, expired, replaced, or action/draft edited since) -> 409 "Preview first".
-   * When the model flipped the rules' action, the seller must confirm (`confirmed: true`).
    */
   async approve(
     id: string,
     action: Action,
     draft: string,
-    opts: { previewId?: string; confirmed?: boolean } = {},
+    opts: { previewId?: string } = {},
   ): Promise<{ request: OutboundRequest; status: number; body: unknown }> {
     const entry = this.previews.get(id);
     if (!entry || entry.expiresAt <= this.clock() || !opts.previewId || entry.previewId !== opts.previewId) {
@@ -167,9 +161,6 @@ export class DisputeCopilot {
     }
     if (entry.action !== action || entry.draft !== draft) {
       throw new PayPalHttpError(409, "Preview first: the action or draft changed since the preview.");
-    }
-    if (entry.actionChangedByLLM && !opts.confirmed) {
-      throw new PayPalHttpError(409, `AI changed the recommendation from ${entry.rulesAction} to ${entry.recommendedAction}; tick the confirmation before sending.`);
     }
     this.previews.delete(id); // single use: a double click cannot send twice
     const result = await this.paypal.send(id, entry.request);

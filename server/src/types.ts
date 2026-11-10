@@ -103,12 +103,9 @@ export interface Recommendation {
   assessment: string;
   draft: string;
   draftSource: "llm" | "template";
-  llmAdjustment?: { delta: number; why: string };
   reason: DisputeReason;
-  /** Action the rules alone chose, before the model's score nudge. */
+  /** Action the rules alone chose, before the recommendation is limited to what PayPal allows. */
   rulesAction: Action;
-  /** The model's nudge flipped the action: the UI warns and approve needs an explicit confirm. */
-  actionChangedByLLM: boolean;
   /** Facts were insufficient: recommendation is "FIGHT — human review", never a silent OFFER/ACCEPT. */
   needsHumanReview: boolean;
   /** Seller actions PayPal currently allows for this dispute (from status, stage, allowed_response_options, links). */
