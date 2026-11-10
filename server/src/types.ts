@@ -103,6 +103,8 @@ export interface Recommendation {
   assessment: string;
   draft: string;
   draftSource: "llm" | "template";
+  /** Model that wrote the draft; set only when draftSource is "llm". */
+  draftModel?: string;
   reason: DisputeReason;
   /** Action the rules alone chose, before the recommendation is limited to what PayPal allows. */
   rulesAction: Action;

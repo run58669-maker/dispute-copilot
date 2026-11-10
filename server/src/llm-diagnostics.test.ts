@@ -41,7 +41,7 @@ describe("LLM failure diagnostics", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it("classifies timeout, parse and other failures; caps the message at 200 chars", async () => {
+  it("classifies timeout, parse and other failures; caps the message at 400 chars", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const k = await input("PP-D-MOCK-1001");
     const hang = ((_u: string, init: RequestInit) =>
@@ -57,7 +57,7 @@ describe("LLM failure diagnostics", () => {
     }) as unknown as typeof fetch, noSleep);
     await c.draft(k);
     expect(c.status().llmLastError?.kind).toBe("other");
-    expect(c.status().llmLastError?.message.length).toBeLessThanOrEqual(200);
+    expect(c.status().llmLastError?.message.length).toBeLessThanOrEqual(400);
   });
 
   it("records llmLastOkAt on success and exposes both through /api/health", async () => {
@@ -67,7 +67,7 @@ describe("LLM failure diagnostics", () => {
     const server = createApp(MockPayPalClient.fromFile(fixtures, NOW), drafter).listen(0);
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     try {
-      expect(await (await fetch(`${url}/api/health`)).json()).toEqual({ ok: true, paypal: "mock", drafter: "llm", writes: "read-only" });
+      expect(await (await fetch(`${url}/api/health`)).json()).toEqual({ ok: true, paypal: "mock", drafter: "llm", llmModels: ["m"], llmExhausted: [], writes: "read-only" });
       await drafter.draft(await input("PP-D-MOCK-1001"));
       const h1 = (await (await fetch(`${url}/api/health`)).json()) as Record<string, unknown>;
       expect(h1.llmLastError).toMatchObject({ kind: "http", status: 500 });
@@ -143,5 +143,112 @@ describe("LLM concurrency and 429 retry", () => {
     await b.draft(await input("PP-D-MOCK-1001"));
     expect(calls).toBe(2);
     expect(b.status().llmLastError).toMatchObject({ kind: "http", status: 429 });
+  });
+});
+
+describe("LLM model fallback chain", () => {
+  const chainCfg = { ...cfg, model: "a", fallbackModels: ["b", "c"] };
+  const quota = () => new Response(JSON.stringify([{ error: { message: "You exceeded your current quota. * Quota exceeded for metric: generate_content_free_tier_requests" } }]), { status: 429 });
+  const modelOf = (init: RequestInit) => (JSON.parse(String(init.body)) as { model: string }).model;
+  /** fetch that answers per model. */
+  function router(plan: Record<string, "ok" | "quota" | "404" | "badkey">, seen: string[]) {
+    return (async (_u: string, init: RequestInit) => {
+      const m = modelOf(init);
+      seen.push(m);
+      const r = plan[m];
+      if (r === "ok") return okBody();
+      if (r === "quota") return quota();
+      if (r === "404") return new Response(JSON.stringify({ error: { message: "models/" + m + " is not found for API version v1beta" } }), { status: 404 });
+      return new Response(JSON.stringify({ error: { message: "API key not valid" } }), { status: 400 });
+    }) as unknown as typeof fetch;
+  }
+
+  it("advances to the next model on a 429 and reports which model wrote the draft", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seen: string[] = [];
+    const drafter = new LlmDrafter(chainCfg, router({ a: "quota", b: "ok", c: "ok" }, seen), noSleep);
+    const result = await drafter.draft(await input("PP-D-MOCK-1001"));
+    expect(result).toMatchObject({ source: "llm", model: "b" });
+    expect(seen).toEqual(["a", "a", "b"]); // a: first call + one retry (no stated delay: 2 s), then b
+    expect(drafter.status().llmLastError).toMatchObject({ model: "a", status: 429 });
+    expect(drafter.status().llmLastError?.message).toContain("Quota exceeded for metric");
+  });
+
+  it("skips an exhausted model for 15 minutes, then tries it again", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let t = Date.parse("2026-11-10T10:00:00Z");
+    const seen: string[] = [];
+    const plan: Record<string, "ok" | "quota"> = { a: "quota", b: "ok" };
+    const drafter = new LlmDrafter({ ...cfg, model: "a", fallbackModels: ["b"] }, router(plan, seen), noSleep, () => t);
+    await drafter.draft(await input("PP-D-MOCK-1001"));
+    expect(seen).toEqual(["a", "a", "b"]);
+    expect(drafter.status().llmExhausted).toEqual([{ model: "a", until: "2026-11-10T10:15:00.000Z" }]);
+    seen.length = 0;
+    t += 14 * 60_000;
+    expect((await drafter.draft(await input("PP-D-MOCK-1002"))).model).toBe("b");
+    expect(seen).toEqual(["b"]); // a is skipped: no wasted call
+    seen.length = 0;
+    t += 61_000; // 15 min 1 s after the first failure
+    plan.a = "ok";
+    expect((await drafter.draft(await input("PP-D-MOCK-1003"))).model).toBe("a");
+    expect(seen).toEqual(["a"]);
+    expect(drafter.status().llmExhausted).toEqual([]);
+  });
+
+  it("moves on when a model is not found (404 or 400 model not found), but not on a bad key", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seen: string[] = [];
+    const nf = new LlmDrafter(chainCfg, router({ a: "404", b: "ok" }, seen), noSleep);
+    expect(await nf.draft(await input("PP-D-MOCK-1001"))).toMatchObject({ source: "llm", model: "b" });
+    expect(seen).toEqual(["a", "b"]);
+    const seen2: string[] = [];
+    const bad = new LlmDrafter(chainCfg, router({ a: "badkey", b: "ok" }, seen2), noSleep);
+    expect((await bad.draft(await input("PP-D-MOCK-1001"))).source).toBe("template");
+    expect(seen2).toEqual(["a"]);
+    const seen3: string[] = [];
+    const f400 = (async (_u: string, init: RequestInit) => {
+      seen3.push(modelOf(init));
+      return modelOf(init) === "a" ? new Response(JSON.stringify({ error: { message: "Invalid model name: a" } }), { status: 400 }) : okBody();
+    }) as unknown as typeof fetch;
+    expect((await new LlmDrafter(chainCfg, f400, noSleep).draft(await input("PP-D-MOCK-1001"))).model).toBe("b");
+    expect(seen3).toEqual(["a", "b"]);
+  });
+
+  it("falls back to the template when every model fails, without a model name", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seen: string[] = [];
+    const drafter = new LlmDrafter(chainCfg, router({ a: "quota", b: "404", c: "quota" }, seen), noSleep);
+    const result = await drafter.draft(await input("PP-D-MOCK-1001"));
+    expect(result.source).toBe("template");
+    expect(result.model).toBeUndefined();
+    expect(drafter.status().llmExhausted?.map((e) => e.model)).toEqual(["a", "c"]);
+    seen.length = 0;
+    expect((await drafter.draft(await input("PP-D-MOCK-1002"))).source).toBe("template");
+    expect(seen).toEqual(["b"]); // the quota-exhausted ones are skipped
+  });
+
+  it("caches by dispute state, not by model; draftModel reaches the recommendation and /api/health", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seen: string[] = [];
+    const plan: Record<string, "ok" | "quota"> = { a: "quota", b: "ok" };
+    const drafter = new LlmDrafter({ ...cfg, model: "a", fallbackModels: ["b"] }, router(plan, seen), noSleep);
+    const k = await input("PP-D-MOCK-1001");
+    await drafter.draft(k);
+    seen.length = 0;
+    plan.a = "ok"; // even with a recovered, the draft written by b is reused
+    expect((await drafter.draft(k)).model).toBe("b");
+    expect(seen).toEqual([]);
+    const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), drafter, () => NOW);
+    const queue = await copilot.queue();
+    expect(queue.every((r) => r.draftSource === "llm" && typeof r.draftModel === "string")).toBe(true);
+    const server = createApp(MockPayPalClient.fromFile(fixtures, NOW), drafter).listen(0);
+    try {
+      const h = (await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/health`)).json()) as Record<string, unknown>;
+      expect(h.llmModels).toEqual(["a", "b"]);
+      expect(h.llmExhausted).toHaveLength(1);
+      expect(h.llmLastError).toMatchObject({ model: "a", status: 429 });
+    } finally {
+      server.close();
+    }
   });
 });

@@ -108,6 +108,7 @@ export class DisputeCopilot {
       assessment: drafted.assessment,
       draft: drafted.draft,
       draftSource: drafted.source,
+      ...(drafted.model ? { draftModel: drafted.model } : {}),
     };
   }
 

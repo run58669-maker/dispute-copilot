@@ -17,6 +17,8 @@ export interface DraftResult {
   /** Text submitted to PayPal (evidence notes, offer note or accept-claim note). */
   draft: string;
   source: "llm" | "template";
+  /** Model that wrote the draft (LLM only). */
+  model?: string;
 }
 
 export interface Drafter {
@@ -90,8 +92,14 @@ export interface LlmConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
+  /** Tried in order after `model` on quota 429 or model-not-found. Default: none. */
+  fallbackModels?: string[];
   timeoutMs?: number;
 }
+
+export const DEFAULT_FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-3.5-flash-lite"];
+/** How long a model that returned a quota 429 is skipped. */
+export const EXHAUSTED_MS = 15 * 60_000;
 
 export const ASSESSMENT_MAX = 900;
 
@@ -127,12 +135,15 @@ export function buildPrompt(input: DraftInput): { system: string; user: string }
 
 export interface LlmFailure {
   at: string;
+  model?: string;
   kind: "http" | "timeout" | "parse" | "other";
   status?: number;
   message: string;
 }
 
 export interface LlmStatus {
+  llmModels?: string[];
+  llmExhausted?: Array<{ model: string; until: string }>;
   llmLastError?: LlmFailure;
   llmLastOkAt?: string;
 }
@@ -142,13 +153,19 @@ export const RETRY_CAP_MS = 10_000;
 /** Model calls in flight at once (the queue drafts up to 5 disputes in parallel). */
 export const LLM_CONCURRENCY = 2;
 
+/** 404, or 400 saying the model is unknown: try the next model. A 400 about the API key or the request is not this. */
+function isModelNotFound(error: LlmCallError): boolean {
+  if (error.status === 404) return true;
+  return error.status === 400 && /model/i.test(error.message) && /not found|not supported|does not exist|unknown model|invalid model/i.test(error.message);
+}
+
 class LlmCallError extends Error {
   constructor(readonly kind: LlmFailure["kind"], message: string, readonly status?: number, readonly retryAfterMs?: number) {
     super(message);
   }
 }
 
-/** Strips anything that could carry the key: URLs, key=/token query values, Bearer values, the key itself. Capped at 200 chars. */
+/** Strips anything that could carry the key: URLs, key=/token query values, Bearer values, the key itself. Capped at 400 chars. */
 export function scrubMessage(text: string, apiKey: string): string {
   let out = text
     .replace(/https?:\/\/\S+/gi, "[url]")
@@ -156,7 +173,7 @@ export function scrubMessage(text: string, apiKey: string): string {
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
     .replace(/AIza[\w-]{10,}/g, "[redacted]");
   if (apiKey.length >= 4) out = out.split(apiKey).join("[redacted]");
-  return out.replace(/\s+/g, " ").trim().slice(0, 200);
+  return out.replace(/\s+/g, " ").trim().slice(0, 400);
 }
 
 /** Delay a 429 asks for: Retry-After header (seconds), else "retry in 12.3s" / retryDelay "12s" in the body. */
@@ -170,7 +187,8 @@ export function retryDelayMs(retryAfterHeader: string | null | undefined, body: 
 /**
  * Any OpenAI-compatible /chat/completions endpoint (default: Gemini 2.5 Flash free tier).
  * Results are cached per dispute state + action so reloading the queue does not burn the free quota.
- * Falls back to the template on any failure (HTTP error, timeout, bad JSON); failures are not cached.
+ * Models are tried in order (config.model, then fallbackModels): a quota 429 (after the one retry) marks the model exhausted for EXHAUSTED_MS and moves on; so does model-not-found.
+ * Falls back to the template when no model succeeds (HTTP error, timeout, bad JSON); failures are not cached.
  * At most LLM_CONCURRENCY calls run at once; a 429 is retried once after the delay it states (up to RETRY_CAP_MS).
  * The last failure (scrubbed, no key) and last success time are exposed through status() for /api/health.
  */
@@ -179,6 +197,8 @@ export class LlmDrafter implements Drafter {
   private readonly fallback = new TemplateDrafter();
   private readonly cache = new Map<string, Promise<DraftResult>>();
   private readonly limit = pLimit(LLM_CONCURRENCY);
+  private readonly chain: string[];
+  private readonly exhaustedUntil = new Map<string, number>();
   private lastError: LlmFailure | undefined;
   private lastOkAt: string | undefined;
 
@@ -186,10 +206,15 @@ export class LlmDrafter implements Drafter {
     private readonly config: LlmConfig,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  ) {}
+    private readonly now: () => number = Date.now,
+  ) {
+    this.chain = [...new Set([config.model, ...(config.fallbackModels ?? [])])];
+  }
 
   status(): LlmStatus {
-    return { ...(this.lastError ? { llmLastError: this.lastError } : {}), ...(this.lastOkAt ? { llmLastOkAt: this.lastOkAt } : {}) };
+    const t = this.now();
+    const exhausted = this.chain.filter((m) => (this.exhaustedUntil.get(m) ?? 0) > t).map((m) => ({ model: m, until: new Date(this.exhaustedUntil.get(m) as number).toISOString() }));
+    return { llmModels: this.chain, llmExhausted: exhausted, ...(this.lastError ? { llmLastError: this.lastError } : {}), ...(this.lastOkAt ? { llmLastOkAt: this.lastOkAt } : {}) };
   }
 
   draft(input: DraftInput): Promise<DraftResult> {
@@ -208,24 +233,33 @@ export class LlmDrafter implements Drafter {
 
   private async call(input: DraftInput): Promise<DraftResult> {
     const { system, user } = buildPrompt(input);
-    try {
-      let parsed: { assessment: string; draft: string };
+    for (const model of this.chain) {
+      if ((this.exhaustedUntil.get(model) ?? 0) > this.now()) continue;
       try {
-        parsed = await this.attempt(system, user);
+        let parsed: { assessment: string; draft: string };
+        try {
+          parsed = await this.attempt(model, system, user);
+        } catch (error) {
+          if (!(error instanceof LlmCallError) || error.status !== 429 || (error.retryAfterMs ?? 2000) > RETRY_CAP_MS) throw error;
+          await this.sleep(error.retryAfterMs ?? 2000);
+          parsed = await this.attempt(model, system, user);
+        }
+        this.lastOkAt = new Date().toISOString();
+        return { assessment: parsed.assessment || templateAssessment(input), draft: truncateNote(parsed.draft), source: "llm", model };
       } catch (error) {
-        if (!(error instanceof LlmCallError) || error.status !== 429 || (error.retryAfterMs ?? 2000) > RETRY_CAP_MS) throw error;
-        await this.sleep(error.retryAfterMs ?? 2000);
-        parsed = await this.attempt(system, user);
+        this.record(error, model);
+        if (error instanceof LlmCallError && error.status === 429) {
+          this.exhaustedUntil.set(model, this.now() + EXHAUSTED_MS);
+          continue;
+        }
+        if (error instanceof LlmCallError && isModelNotFound(error)) continue;
+        break;
       }
-      this.lastOkAt = new Date().toISOString();
-      return { assessment: parsed.assessment || templateAssessment(input), draft: truncateNote(parsed.draft), source: "llm" };
-    } catch (error) {
-      this.record(error);
-      return this.fallback.draft(input);
     }
+    return this.fallback.draft(input);
   }
 
-  private async attempt(system: string, user: string): Promise<{ assessment: string; draft: string }> {
+  private async attempt(model: string, system: string, user: string): Promise<{ assessment: string; draft: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 20_000);
     try {
@@ -233,7 +267,7 @@ export class LlmDrafter implements Drafter {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.config.apiKey}` },
         body: JSON.stringify({
-          model: this.config.model,
+          model,
           messages: [{ role: "system", content: system }, { role: "user", content: user }],
           response_format: { type: "json_object" },
         }),
@@ -262,7 +296,7 @@ export class LlmDrafter implements Drafter {
     }
   }
 
-  private record(error: unknown): void {
+  private record(error: unknown, model: string): void {
     let kind: LlmFailure["kind"] = "other";
     let status: number | undefined;
     let raw = error instanceof Error ? error.message : String(error);
@@ -273,9 +307,9 @@ export class LlmDrafter implements Drafter {
       kind = "timeout";
       raw = "request timed out";
     }
-    const failure: LlmFailure = { at: new Date().toISOString(), kind, ...(status !== undefined ? { status } : {}), message: scrubMessage(raw, this.config.apiKey) };
+    const failure: LlmFailure = { at: new Date().toISOString(), model, kind, ...(status !== undefined ? { status } : {}), message: scrubMessage(raw, this.config.apiKey) };
     this.lastError = failure;
-    console.warn(`LLM call failed: kind=${failure.kind}${status !== undefined ? ` status=${status}` : ""} message=${failure.message}`);
+    console.warn(`LLM call failed: model=${model} kind=${failure.kind}${status !== undefined ? ` status=${status}` : ""} message=${failure.message}`);
   }
 }
 

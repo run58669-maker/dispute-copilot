@@ -17,5 +17,7 @@ services:
         sync: false
       - key: LLM_MODEL
         value: gemini-2.5-flash
+      - key: LLM_FALLBACK_MODELS
+        value: gemini-2.5-flash-lite,gemini-3.5-flash-lite
       - key: PORT
         value: 3000

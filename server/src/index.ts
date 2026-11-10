@@ -3,7 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DisputeCopilot } from "./copilot.js";
-import { LlmDrafter, TemplateDrafter, type Drafter } from "./drafter.js";
+import { DEFAULT_FALLBACK_MODELS, LlmDrafter, TemplateDrafter, type Drafter } from "./drafter.js";
 import { MockPayPalClient, PayPalHttpError, SandboxPayPalClient } from "./paypal-client.js";
 import type { Action, PayPalClient } from "./types.js";
 
@@ -25,12 +25,18 @@ export function createPayPal(env: NodeJS.ProcessEnv): PayPalClient {
   return MockPayPalClient.fromFile(resolve(root, "fixtures", "disputes.json"), new Date(), { resetEveryMs: MOCK_RESET_MS });
 }
 
+function parseModelList(raw: string | undefined): string[] {
+  if (raw === undefined) return DEFAULT_FALLBACK_MODELS;
+  return raw.split(",").map((m) => m.trim()).filter(Boolean);
+}
+
 export function createDrafter(env: NodeJS.ProcessEnv): Drafter {
   if (env.LLM_API_KEY) {
     return new LlmDrafter({
       apiKey: env.LLM_API_KEY,
       baseUrl: env.LLM_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai",
       model: env.LLM_MODEL || "gemini-2.5-flash",
+      fallbackModels: parseModelList(env.LLM_FALLBACK_MODELS),
     });
   }
   return new TemplateDrafter();

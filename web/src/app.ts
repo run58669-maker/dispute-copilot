@@ -21,10 +21,12 @@ interface Rec {
   assessment: string;
   draft: string;
   draftSource: "llm" | "template";
+  draftModel?: string;
 }
 
 /** JPY, HUF and TWD have no minor unit; everything else shows cents. */
 const money = (n: number, currency: string) => n.toFixed(["JPY", "HUF", "TWD"].includes(currency) ? 0 : 2);
+const aiLabel = (rec: { draftSource: string; draftModel?: string }) => (rec.draftSource === "llm" ? (rec.draftModel ? `AI · ${esc(rec.draftModel)}` : "AI") : "template");
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c);
 const caseEl = document.getElementById("case") as HTMLElement;
 const EMPTY = '<p class="empty">Pick a dispute to see the recommendation.</p>';
@@ -91,12 +93,12 @@ function showCase(rec: Rec): void {
     ${rec.needsHumanReview ? '<p class="alert">Insufficient facts — a human must review before any response.</p>' : ""}
     <p>${esc(rec.actionReason)}</p>
     <p class="note">PayPal status ${esc(rec.paypalStatus)}${rec.lifecycleStage ? ` · stage ${esc(rec.lifecycleStage)}` : ""} · PayPal currently allows: <b>${rec.allowedActions.length ? rec.allowedActions.join(", ") : "no seller action"}</b></p>
-    <h3>Assessment <span class="hint">(${rec.draftSource === "llm" ? "AI" : "template"})</span></h3>
+    <h3>Assessment <span class="hint">(${aiLabel(rec)})</span></h3>
     <p class="assessment">${esc(rec.assessment)}</p>
     <details><summary>Why this score</summary><ul class="factors">${rec.factors.map((f) => `<li>${esc(f.label)}: ${f.points >= 0 ? "+" : ""}${f.points}</li>`).join("")}</ul></details>
     <h3>Evidence PayPal asks for</h3>
     <ul class="plan">${rec.evidencePlan.map((p) => `<li class="${p.have ? "" : "missing"}">${p.have ? "✓" : "✗"} ${esc(p.evidence_type)} — ${esc(p.why)}</li>`).join("")}</ul>
-    <h3>Draft <span class="hint">(${rec.draftSource === "llm" ? "AI" : "template"}; edit freely)</span></h3>
+    <h3>Draft <span class="hint">(${aiLabel(rec)}; edit freely)</span></h3>
     <textarea id="draft">${esc(rec.draft)}</textarea>
     <div class="row">
       <label>Action <select id="action">${(["FIGHT", "OFFER", "ACCEPT"] as const)
