@@ -1,3 +1,4 @@
+import { pLimit } from "./limit.js";
 import { truncateNote } from "./policy.js";
 import type { Action, DisputeCase, EvidenceItem, Money, ScoreFactor } from "./types.js";
 
@@ -21,6 +22,8 @@ export interface DraftResult {
 export interface Drafter {
   readonly kind: "llm" | "template";
   draft(input: DraftInput): Promise<DraftResult>;
+  /** Last model failure / success, for /api/health. Template drafter has none. */
+  status?(): LlmStatus;
 }
 
 /** Facts as plain lines. The only material either drafter may cite. */
@@ -122,24 +125,79 @@ export function buildPrompt(input: DraftInput): { system: string; user: string }
   return { system, user };
 }
 
+export interface LlmFailure {
+  at: string;
+  kind: "http" | "timeout" | "parse" | "other";
+  status?: number;
+  message: string;
+}
+
+export interface LlmStatus {
+  llmLastError?: LlmFailure;
+  llmLastOkAt?: string;
+}
+
+/** Longest 429 retry delay we wait for; a longer stated delay is not retried. */
+export const RETRY_CAP_MS = 10_000;
+/** Model calls in flight at once (the queue drafts up to 5 disputes in parallel). */
+export const LLM_CONCURRENCY = 2;
+
+class LlmCallError extends Error {
+  constructor(readonly kind: LlmFailure["kind"], message: string, readonly status?: number, readonly retryAfterMs?: number) {
+    super(message);
+  }
+}
+
+/** Strips anything that could carry the key: URLs, key=/token query values, Bearer values, the key itself. Capped at 200 chars. */
+export function scrubMessage(text: string, apiKey: string): string {
+  let out = text
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/\b(key|api_key|apikey|token|access_token)=[^\s&"']+/gi, "$1=[redacted]")
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/AIza[\w-]{10,}/g, "[redacted]");
+  if (apiKey.length >= 4) out = out.split(apiKey).join("[redacted]");
+  return out.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/** Delay a 429 asks for: Retry-After header (seconds), else "retry in 12.3s" / retryDelay "12s" in the body. */
+export function retryDelayMs(retryAfterHeader: string | null | undefined, body: string): number | undefined {
+  const header = Number(retryAfterHeader);
+  if (retryAfterHeader && Number.isFinite(header) && header >= 0) return Math.ceil(header * 1000);
+  const m = /retry in ([\d.]+)\s*s/i.exec(body) ?? /"retryDelay"\s*:\s*"([\d.]+)s"/i.exec(body);
+  return m ? Math.ceil(Number(m[1]) * 1000) : undefined;
+}
+
 /**
  * Any OpenAI-compatible /chat/completions endpoint (default: Gemini 2.5 Flash free tier).
  * Results are cached per dispute state + action so reloading the queue does not burn the free quota.
  * Falls back to the template on any failure (HTTP error, timeout, bad JSON); failures are not cached.
+ * At most LLM_CONCURRENCY calls run at once; a 429 is retried once after the delay it states (up to RETRY_CAP_MS).
+ * The last failure (scrubbed, no key) and last success time are exposed through status() for /api/health.
  */
 export class LlmDrafter implements Drafter {
   readonly kind = "llm" as const;
   private readonly fallback = new TemplateDrafter();
   private readonly cache = new Map<string, Promise<DraftResult>>();
+  private readonly limit = pLimit(LLM_CONCURRENCY);
+  private lastError: LlmFailure | undefined;
+  private lastOkAt: string | undefined;
 
-  constructor(private readonly config: LlmConfig, private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(
+    private readonly config: LlmConfig,
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  ) {}
+
+  status(): LlmStatus {
+    return { ...(this.lastError ? { llmLastError: this.lastError } : {}), ...(this.lastOkAt ? { llmLastOkAt: this.lastOkAt } : {}) };
+  }
 
   draft(input: DraftInput): Promise<DraftResult> {
     const d = input.kase.dispute;
     const key = [d.dispute_id, d.update_time ?? d.create_time, d.status, input.action, input.score].join("|");
     const hit = this.cache.get(key);
     if (hit) return hit;
-    const pending = this.call(input).then((result) => {
+    const pending = this.limit(() => this.call(input)).then((result) => {
       if (result.source !== "llm") this.cache.delete(key);
       return result;
     });
@@ -151,8 +209,26 @@ export class LlmDrafter implements Drafter {
   private async call(input: DraftInput): Promise<DraftResult> {
     const { system, user } = buildPrompt(input);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 20_000);
+      let parsed: { assessment: string; draft: string };
+      try {
+        parsed = await this.attempt(system, user);
+      } catch (error) {
+        if (!(error instanceof LlmCallError) || error.status !== 429 || (error.retryAfterMs ?? 2000) > RETRY_CAP_MS) throw error;
+        await this.sleep(error.retryAfterMs ?? 2000);
+        parsed = await this.attempt(system, user);
+      }
+      this.lastOkAt = new Date().toISOString();
+      return { assessment: parsed.assessment || templateAssessment(input), draft: truncateNote(parsed.draft), source: "llm" };
+    } catch (error) {
+      this.record(error);
+      return this.fallback.draft(input);
+    }
+  }
+
+  private async attempt(system: string, user: string): Promise<{ assessment: string; draft: string }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 20_000);
+    try {
       const response = await this.fetchImpl(`${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.config.apiKey}` },
@@ -162,18 +238,44 @@ export class LlmDrafter implements Drafter {
           response_format: { type: "json_object" },
         }),
         signal: controller.signal,
-      }).finally(() => clearTimeout(timer));
-      if (!response.ok) throw new Error(`LLM HTTP ${response.status}`);
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        let detail = body;
+        try {
+          const j = JSON.parse(body) as unknown;
+          const e = (Array.isArray(j) ? j[0] : j) as { error?: { message?: string } } | undefined;
+          if (typeof e?.error?.message === "string") detail = e.error.message;
+        } catch {
+          /* body is not JSON: use it as text */
+        }
+        throw new LlmCallError("http", `HTTP ${response.status}: ${detail}`, response.status, retryDelayMs(response.headers?.get?.("retry-after"), body));
+      }
       const json = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-      const parsed = parseLlmJson(json.choices?.[0]?.message?.content ?? "");
-      return {
-        assessment: parsed.assessment || templateAssessment(input),
-        draft: truncateNote(parsed.draft),
-        source: "llm",
-      };
-    } catch {
-      return this.fallback.draft(input);
+      try {
+        return parseLlmJson(json.choices?.[0]?.message?.content ?? "");
+      } catch (error) {
+        throw new LlmCallError("parse", error instanceof Error ? error.message : "parse error");
+      }
+    } finally {
+      clearTimeout(timer);
     }
+  }
+
+  private record(error: unknown): void {
+    let kind: LlmFailure["kind"] = "other";
+    let status: number | undefined;
+    let raw = error instanceof Error ? error.message : String(error);
+    if (error instanceof LlmCallError) {
+      kind = error.kind;
+      status = error.status;
+    } else if (error instanceof Error && error.name === "AbortError") {
+      kind = "timeout";
+      raw = "request timed out";
+    }
+    const failure: LlmFailure = { at: new Date().toISOString(), kind, ...(status !== undefined ? { status } : {}), message: scrubMessage(raw, this.config.apiKey) };
+    this.lastError = failure;
+    console.warn(`LLM call failed: kind=${failure.kind}${status !== undefined ? ` status=${status}` : ""} message=${failure.message}`);
   }
 }
 

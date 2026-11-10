@@ -136,7 +136,7 @@ export function createApp(paypal: PayPalClient, drafter: Drafter, options: AppOp
   });
   // Health stays outside the limiter so the platform health check never trips it.
   app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, paypal: paypal.mode, drafter: drafter.kind, writes: adminToken ? "token" : "read-only" });
+    res.json({ ok: true, paypal: paypal.mode, drafter: drafter.kind, ...(drafter.status?.() ?? {}), writes: adminToken ? "token" : "read-only" });
   });
   app.use("/api", rateLimiter(options.rateLimit ?? { read: 30, write: 5 }, isWrite));
   app.use(express.json({ limit: "32kb" }));
