@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Drafter } from "./drafter.js";
 import { mapLimit } from "./limit.js";
 import { factsErrorReason, MAX_IN_FLIGHT, PayPalHttpError } from "./paypal-client.js";
-import { allowedActions, amountOf, buildRequest, clamp, decideAction, evidencePlan, hoursLeft, offerAmount, ruleScore } from "./policy.js";
+import { allowedActions, amountOf, buildRequest, clamp, decideAction, evidencePlan, hoursLeft, offerAmount, ruleScore, thresholdAmount } from "./policy.js";
 import type { Action, DisputeCase, OutboundRequest, PayPalClient, Recommendation } from "./types.js";
 
 /** A preview and its recommendation stay valid this long; approve after that needs a fresh preview. */
@@ -78,13 +78,13 @@ export class DisputeCopilot {
     // Missing facts must never quietly become OFFER/ACCEPT: route to a human with the fight checklist.
     const first = facts.unknown
       ? { action: "FIGHT" as Action, reason: `Insufficient facts: ${facts.unknownReason ?? "order data unavailable"} Human review needed before any response.` }
-      : decideAction(score, amount);
+      : decideAction(score, thresholdAmount(dispute.dispute_amount));
     const offer = offerAmount(dispute.dispute_amount);
     let drafted = await this.drafter.draft({ kase, action: first.action, score, factors, plan, ...(first.action === "OFFER" ? { offer } : {}) });
 
     // The model may nudge the score within ±LLM_MAX_ADJUST; if that flips the action, redraft once for the new action.
     const finalScore = clamp(score + (drafted.adjustment?.delta ?? 0), 0, 100);
-    const final = facts.unknown ? first : decideAction(finalScore, amount);
+    const final = facts.unknown ? first : decideAction(finalScore, thresholdAmount(dispute.dispute_amount));
     const changed = final.action !== first.action;
     if (changed) {
       const redraft = await this.drafter.draft({ kase, action: final.action, score: finalScore, factors, plan, ...(final.action === "OFFER" ? { offer } : {}) });

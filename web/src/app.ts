@@ -25,6 +25,8 @@ interface Rec {
   llmAdjustment?: { delta: number; why: string };
 }
 
+/** JPY, HUF and TWD have no minor unit; everything else shows cents. */
+const money = (n: number, currency: string) => n.toFixed(["JPY", "HUF", "TWD"].includes(currency) ? 0 : 2);
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c);
 const caseEl = document.getElementById("case") as HTMLElement;
 const EMPTY = '<p class="empty">Pick a dispute to see the recommendation.</p>';
@@ -86,7 +88,7 @@ function showCase(rec: Rec): void {
   const allowed = new Set(rec.allowedActions);
   caseEl.innerHTML = `
     <h2>${esc(rec.disputeId)}</h2>
-    <p><span class="action ${rec.action}">${rec.action}</span> · win score ${rec.score}/100 · ${rec.amount.toFixed(2)} ${esc(rec.currency)}
+    <p><span class="action ${rec.action}">${rec.action}</span> · win score ${rec.score}/100 · ${money(rec.amount, rec.currency)} ${esc(rec.currency)}
       ${rec.hoursLeft === null ? "" : `· ${rec.hoursLeft} h left`}</p>
     ${rec.actionChangedByLLM ? `<p class="alert">AI changed recommendation — confirm. Rules alone said <b>${rec.rulesAction}</b>; the model's score nudge moved it to <b>${rec.action}</b>.</p>` : ""}
     ${rec.needsHumanReview ? '<p class="alert">Insufficient facts — a human must review before any response.</p>' : ""}
@@ -183,7 +185,7 @@ async function load(): Promise<void> {
       { field: "disputeId", headerName: "Dispute", flex: 2, minWidth: 140 },
       { field: "reason", headerName: "Reason", flex: 2, minWidth: 150, valueFormatter: (p) => String(p.value ?? "").replace(/_/g, " ").toLowerCase() },
       { field: "hoursLeft", headerName: "Hours left", flex: 1, minWidth: 90, sort: "asc" },
-      { field: "amount", headerName: "Amount", flex: 1, minWidth: 90, valueFormatter: (p) => (p.value as number).toFixed(2) },
+      { field: "amount", headerName: "Amount", flex: 1, minWidth: 90, valueFormatter: (p) => money(p.value as number, (p.data as Rec | undefined)?.currency ?? "") },
       { field: "currency", headerName: "Currency", flex: 1, minWidth: 80 },
       { field: "score", headerName: "Win score", flex: 1, minWidth: 80 },
       { field: "action", headerName: "Recommends", flex: 1, minWidth: 100, cellClass: (p) => `action ${p.value as string}` },

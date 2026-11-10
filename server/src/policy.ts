@@ -2,8 +2,14 @@ import type { Action, Dispute, DisputeReason, EvidenceItem, Money, OrderFacts, O
 
 /** Decision thresholds. FIGHT at or above `fight`, OFFER at or above `offer`, else ACCEPT. */
 export const THRESHOLDS = { fight: 60, offer: 30 } as const;
-/** Below this amount (in the dispute currency) fighting costs more seller time than it saves: accept. */
+/** Below this amount (USD, or its rough equivalent, see thresholdAmount) fighting costs more seller time than it saves: accept. */
 export const MIN_WORTH_FIGHTING = 15;
+/** At or above this amount (same scale) a missing delivery signature costs points. */
+export const HIGH_VALUE = 750;
+/** PayPal currencies with no minor unit: amounts must be whole numbers, a decimal value is rejected. */
+export const ZERO_DECIMAL_CURRENCIES = new Set(["JPY", "HUF", "TWD"]);
+/** Rough units per 1 USD, used only to scale the fixed thresholds above (a JP sandbox account disputes in JPY). */
+const UNITS_PER_USD: Record<string, number> = { JPY: 150, HUF: 360, TWD: 32 };
 /** Share of the disputed amount offered back when the copilot recommends a partial refund. */
 export const OFFER_SHARE = 0.5;
 /** PayPal limit on evidence `notes`, offer `note` and accept-claim `note`. */
@@ -21,6 +27,11 @@ export function hoursLeft(dispute: Dispute, now: Date): number | null {
 export function amountOf(money: Money): number {
   const n = Number(money.value);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** The amount on the scale of MIN_WORTH_FIGHTING / HIGH_VALUE: USD-like currencies as-is, JPY/HUF/TWD divided down. */
+export function thresholdAmount(money: Money): number {
+  return amountOf(money) / (UNITS_PER_USD[money.currency_code] ?? 1);
 }
 
 /**
@@ -82,7 +93,7 @@ export function ruleScore(dispute: Dispute, facts: OrderFacts): { score: number;
   }
   if (facts.buyerContactedSellerFirst === false) factors.push({ label: "Buyer never contacted the seller first", points: 5 });
   if ((facts.priorPurchasesBySameBuyer ?? 0) >= 2) factors.push({ label: "Repeat buyer with undisputed history", points: 5 });
-  if (amountOf(dispute.dispute_amount) >= 750 && facts.signatureOnDelivery !== true && !facts.digitalGood) {
+  if (thresholdAmount(dispute.dispute_amount) >= HIGH_VALUE && facts.signatureOnDelivery !== true && !facts.digitalGood) {
     factors.push({ label: "High value without signature confirmation", points: -10 });
   }
   const raw = factors.reduce((sum, factor) => sum + factor.points, 0);
@@ -99,8 +110,9 @@ export function decideAction(score: number, amount: number): { action: Action; r
 }
 
 export function offerAmount(money: Money): Money {
-  const value = Math.round(amountOf(money) * OFFER_SHARE * 100) / 100;
-  return { currency_code: money.currency_code, value: value.toFixed(2) };
+  const decimals = ZERO_DECIMAL_CURRENCIES.has(money.currency_code) ? 0 : 2;
+  const value = Math.round(amountOf(money) * OFFER_SHARE * 10 ** decimals) / 10 ** decimals;
+  return { currency_code: money.currency_code, value: value.toFixed(decimals) };
 }
 
 /**

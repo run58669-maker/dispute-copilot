@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NOTE_MAX, buildRequest, decideAction, evidencePlan, hoursLeft, offerAmount, ruleScore } from "./policy.js";
+import { NOTE_MAX, buildRequest, decideAction, evidencePlan, hoursLeft, offerAmount, ruleScore, thresholdAmount } from "./policy.js";
 import type { Dispute } from "./types.js";
 
 const base: Dispute = {
@@ -42,6 +42,18 @@ describe("rule score and action", () => {
 
   it("offers half the disputed amount, to the cent", () => {
     expect(offerAmount({ currency_code: "USD", value: "64.50" })).toEqual({ currency_code: "USD", value: "32.25" });
+  });
+
+  // Real sandbox: a JP business account disputes in JPY, which PayPal rejects with any decimals.
+  it("offers whole yen for JPY (no decimals) and scales the value thresholds", () => {
+    expect(offerAmount({ currency_code: "JPY", value: "2981" })).toEqual({ currency_code: "JPY", value: "1491" });
+    expect(thresholdAmount({ currency_code: "JPY", value: "2980" })).toBeCloseTo(19.87, 1);
+    expect(thresholdAmount({ currency_code: "USD", value: "20" })).toBe(20);
+    const yen = { ...base, reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED" as const, dispute_amount: { currency_code: "JPY", value: "2980" } };
+    expect(ruleScore(yen, {}).factors.map((f) => f.label)).not.toContain("High value without signature confirmation");
+    expect(ruleScore({ ...yen, dispute_amount: { currency_code: "JPY", value: "120000" } }, {}).factors.map((f) => f.label)).toContain("High value without signature confirmation");
+    expect(decideAction(95, thresholdAmount({ currency_code: "JPY", value: "1200" })).action).toBe("ACCEPT");
+    expect(decideAction(95, thresholdAmount({ currency_code: "JPY", value: "2980" })).action).toBe("FIGHT");
   });
 
   it("computes hours left from the seller due date", () => {
