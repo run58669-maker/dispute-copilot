@@ -103,6 +103,8 @@ export interface Recommendation {
   assessment: string;
   draft: string;
   draftSource: "llm" | "template";
+  /** Deterministic template draft for each action PayPal allows (absent for informational disputes). */
+  actionDrafts?: Partial<Record<Action, string>>;
   /** Model that wrote the draft; set only when draftSource is "llm". */
   draftModel?: string;
   reason: DisputeReason;

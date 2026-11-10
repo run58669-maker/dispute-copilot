@@ -1,4 +1,5 @@
 import { createGrid, type GridApi, type GridOptions } from "ag-grid-community";
+import { draftForAction } from "./drafts.js";
 import { compareHoursLeft, hoursLeftText } from "./hours.js";
 
 type Action = "FIGHT" | "OFFER" | "ACCEPT";
@@ -22,6 +23,7 @@ interface Rec {
   assessment: string;
   draft: string;
   draftSource: "llm" | "template";
+  actionDrafts?: Partial<Record<Action, string>>;
   draftModel?: string;
 }
 
@@ -99,7 +101,7 @@ function showCase(rec: Rec): void {
     <details><summary>Why this score</summary><ul class="factors">${rec.factors.map((f) => `<li>${esc(f.label)}: ${f.points >= 0 ? "+" : ""}${f.points}</li>`).join("")}</ul></details>
     <h3>Evidence PayPal asks for</h3>
     <ul class="plan">${rec.evidencePlan.map((p) => `<li class="${p.have ? "" : "missing"}">${p.have ? "✓" : "✗"} ${esc(p.evidence_type)} — ${esc(p.why)}</li>`).join("")}</ul>
-    <h3>${allowed.size ? "Draft" : "Prepared note (not sendable now)"} <span class="hint">(${aiLabel(rec)}${allowed.size ? "; edit freely" : "; for use only if PayPal asks for more"})</span></h3>
+    <h3>${allowed.size ? "Draft" : "Prepared note (not sendable now)"} <span class="hint" id="draftLabel">(${aiLabel(rec)}${allowed.size ? "; edit freely" : "; for use only if PayPal asks for more"})</span> <span class="hint" id="draftNotice"></span></h3>
     <textarea id="draft">${esc(rec.draft)}</textarea>
     <div class="row">
       <label>Action <select id="action">${(["FIGHT", "OFFER", "ACCEPT"] as const)
@@ -136,8 +138,28 @@ function showCase(rec: Rec): void {
     previewId = "";
     refresh();
   };
-  caseEl.querySelector("#action")?.addEventListener("change", invalidate);
-  caseEl.querySelector("#draft")?.addEventListener("input", invalidate);
+  let edited = false;
+  const draftBox = caseEl.querySelector("#draft") as HTMLTextAreaElement;
+  caseEl.querySelector("#action")?.addEventListener("change", () => {
+    if (allowed.size) {
+      const view = draftForAction({
+        chosen: read().action.split(" ")[0] as Action,
+        recommended: rec.action,
+        aiDraft: rec.draft,
+        aiLabel: aiLabel(rec),
+        templates: rec.actionDrafts ?? {},
+        edited,
+      });
+      if (view.text !== null) draftBox.value = view.text;
+      (caseEl.querySelector("#draftLabel") as HTMLElement).innerHTML = `(${view.label})`;
+      (caseEl.querySelector("#draftNotice") as HTMLElement).textContent = view.notice;
+    }
+    invalidate();
+  });
+  draftBox.addEventListener("input", () => {
+    edited = true;
+    invalidate();
+  });
   refresh();
   caseEl.querySelector("#preview")?.addEventListener("click", async () => {
     out.hidden = false;

@@ -280,6 +280,52 @@ describe("stable score and allowed-action recommendation", () => {
   });
 });
 
+describe("per-action template drafts", () => {
+  const toteBag = (): DisputeCase => ({
+    dispute: {
+      dispute_id: "PP-R-TOTE",
+      create_time: "2026-11-09T00:00:00Z",
+      reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+      status: "WAITING_FOR_SELLER_RESPONSE",
+      dispute_amount: { currency_code: "JPY", value: "2980" },
+      allowed_response_options: { make_offer: { offer_types: ["REFUND"] }, accept_claim: {} },
+    } as DisputeCase["dispute"],
+    facts: { unknown: true, unknownReason: "no tracker on the order" },
+  });
+  const llmLike: Drafter = { draft: async () => ({ assessment: "a", draft: "AI text for the recommended action", source: "llm" as const }) };
+
+  it("returns a template for exactly the allowed actions; the AI draft stays the main draft; JPY offer has no decimals", async () => {
+    const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), llmLike, () => NOW);
+    const rec = await copilot.recommend(toteBag());
+    expect(rec.draft).toBe("AI text for the recommended action");
+    expect(Object.keys(rec.actionDrafts ?? {}).sort()).toEqual(["ACCEPT", "OFFER"]);
+    expect(rec.actionDrafts?.OFFER).toContain("offer a refund of 1490 JPY");
+    expect(rec.actionDrafts?.OFFER).not.toMatch(/accept(ing)? this claim/i);
+    expect(rec.actionDrafts?.ACCEPT).toContain("We accept this claim. The refund of 2980 JPY");
+  });
+
+  it("the OFFER template states the same amount as the make-offer request", async () => {
+    const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), new TemplateDrafter(), () => NOW);
+    const rec = await copilot.recommend(await copilot.loadCase("PP-D-MOCK-1002"));
+    const offerText = rec.actionDrafts?.OFFER as string;
+    const { request } = await copilot.preview("PP-D-MOCK-1002", "OFFER", offerText);
+    expect(request.path).toMatch(/make-offer$/);
+    expect(request.body.offer_amount).toEqual({ currency_code: "USD", value: "32.25" });
+    expect(String(request.body.note)).toContain("offer a refund of 32.25 USD");
+  });
+
+  it("makes no extra LLM call and no template for informational disputes", async () => {
+    let calls = 0;
+    const counting: Drafter = { draft: async () => ({ assessment: "a", draft: `d${++calls}`, source: "llm" as const }) };
+    const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), counting, () => NOW);
+    await copilot.recommend(toteBag());
+    expect(calls).toBe(1);
+    const kase = toteBag();
+    const info = await copilot.recommend({ ...kase, dispute: { ...kase.dispute, status: "UNDER_REVIEW" } });
+    expect(info.actionDrafts).toBeUndefined();
+  });
+});
+
 describe("informational cases (PayPal allows no seller action)", () => {
   const informational = async (): Promise<DraftInput> => {
     const input = await draftInput("PP-D-MOCK-1002");

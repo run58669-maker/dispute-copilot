@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Drafter } from "./drafter.js";
+import { TemplateDrafter, type Drafter } from "./drafter.js";
 import { mapLimit } from "./limit.js";
 import { factsErrorReason, MAX_IN_FLIGHT, PayPalHttpError } from "./paypal-client.js";
 import { allowedActions, amountOf, buildRequest, decideAction, evidencePlan, hoursLeft, offerAmount, restrictToAllowed, ruleScore, thresholdAmount } from "./policy.js";
@@ -96,6 +96,12 @@ export class DisputeCopilot {
       ...(action === "OFFER" ? { offer } : {}),
       ...(allowed.length === 0 ? { informational: true, paypalStatus: dispute.status } : {}),
     });
+    // Deterministic template per allowed action (no LLM), so the UI can swap the text when the seller picks another action.
+    const templates = new TemplateDrafter();
+    const actionDrafts: Partial<Record<Action, string>> = {};
+    for (const a of allowed) {
+      actionDrafts[a] = (await templates.draft({ kase, action: a, score, factors, plan, ...(a === "OFFER" ? { offer } : {}) })).draft;
+    }
     return {
       disputeId: dispute.dispute_id,
       hoursLeft: hoursLeft(dispute, this.now()),
@@ -116,6 +122,7 @@ export class DisputeCopilot {
       assessment: drafted.assessment,
       draft: drafted.draft,
       draftSource: drafted.source,
+      ...(allowed.length ? { actionDrafts } : {}),
       ...(drafted.model ? { draftModel: drafted.model } : {}),
     };
   }
