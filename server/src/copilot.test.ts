@@ -2,9 +2,10 @@ import { resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { DisputeCopilot } from "./copilot.js";
-import { LlmDrafter, TemplateDrafter, buildPrompt, parseLlmJson, type DraftInput } from "./drafter.js";
+import { LlmDrafter, TemplateDrafter, buildPrompt, parseLlmJson, type DraftInput, type Drafter } from "./drafter.js";
+import type { DisputeCase } from "./types.js";
 import { createApp, createDrafter, createPayPal } from "./index.js";
-import { decideAction, evidencePlan, ruleScore } from "./policy.js";
+import { decideAction, evidencePlan, restrictToAllowed, ruleScore } from "./policy.js";
 import { MockPayPalClient, SandboxPayPalClient } from "./paypal-client.js";
 
 const fixtures = resolve(import.meta.dirname, "..", "..", "fixtures", "disputes.json");
@@ -44,7 +45,7 @@ describe("LLM drafter", () => {
     expect(() => parseLlmJson('{"delta":1}')).toThrow();
   });
 
-  it("applies the model's adjustment and redrafts when the action flips", async () => {
+  it("ignores the model's delta: the score stays the rule score and one call is made", async () => {
     const calls: string[] = [];
     const fakeFetch = (async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
@@ -52,11 +53,11 @@ describe("LLM drafter", () => {
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ draft: "LLM text", delta: 15, why: "Buyer admitted receipt." }) } }] }));
     }) as typeof fetch;
     const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), new LlmDrafter({ apiKey: "k", baseUrl: "https://llm.example", model: "m" }, fakeFetch), () => NOW);
-    const kase = await copilot.loadCase("PP-D-MOCK-1002"); // rule score 42 → OFFER; +15 → 57, still OFFER
+    const kase = await copilot.loadCase("PP-D-MOCK-1002");
     const rec = await copilot.recommend(kase);
-    expect(rec.score).toBe(57);
+    expect(rec.score).toBe(ruleScore(kase.dispute, kase.facts).score);
     expect(rec.draftSource).toBe("llm");
-    expect(rec.llmAdjustment?.why).toBe("Buyer admitted receipt.");
+    expect(rec.llmAdjustment).toBeUndefined();
     expect(calls).toHaveLength(1);
   });
 
@@ -86,7 +87,7 @@ describe("prompt builder", () => {
     expect(input.action).toBe("FIGHT");
     const { system, user } = buildPrompt(input);
     expect(system).toMatch(/already been decided/);
-    expect(system).toContain('{"assessment": string, "draft": string, "delta": integer, "why": string}');
+    expect(system).toContain('{"assessment": string, "draft": string}');
     expect(system).toContain("evidence notes");
     expect(user.split("\n")[0]).toBe("Action: FIGHT.");
     expect(user).toContain("Shipped with USPS, tracking 9400100000000000001001, status DELIVERED.");
@@ -202,5 +203,80 @@ describe("safety", () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe("stable score and allowed-action recommendation", () => {
+  const toteBag = (): DisputeCase => ({
+    dispute: {
+      dispute_id: "PP-R-TOTE",
+      create_time: "2026-11-09T00:00:00Z",
+      reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+      status: "WAITING_FOR_SELLER_RESPONSE",
+      dispute_amount: { currency_code: "JPY", value: "2980" },
+      allowed_response_options: { make_offer: { offer_types: ["REFUND"] }, accept_claim: {} },
+    } as DisputeCase["dispute"],
+    facts: { unknown: true, unknownReason: "no tracker on the order" },
+  });
+  /** Returns different text, and a different delta, on every call. */
+  const noisyDrafter = (): Drafter => {
+    let n = 0;
+    return { draft: async () => ({ assessment: `assessment ${++n}`, draft: `draft ${n}`, source: "llm" as const, adjustment: { delta: n % 2 ? -15 : 15, why: `why ${n}` } }) };
+  };
+
+  it("same input twice gives the same score and action although the LLM text differs", async () => {
+    const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), noisyDrafter(), () => NOW);
+    for (const kase of [toteBag(), await copilot.loadCase("PP-D-MOCK-1001"), await copilot.loadCase("PP-D-MOCK-1002")]) {
+      const a = await copilot.recommend(kase);
+      const b = await copilot.recommend(kase);
+      expect(b.score).toBe(a.score);
+      expect(b.action).toBe(a.action);
+      expect(b.factors).toEqual(a.factors);
+      expect(b.assessment).not.toBe(a.assessment);
+    }
+  });
+
+  it("factors add up to the score, including when the sum is clamped", () => {
+    const kase = toteBag();
+    const r = ruleScore(kase.dispute, kase.facts);
+    expect(r.factors.reduce((s, f) => s + f.points, 0)).toBe(r.score);
+    const low = ruleScore({ ...kase.dispute, reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED" }, { trackingStatus: "NONE" });
+    expect(low.factors.reduce((s, f) => s + f.points, 0)).toBe(low.score);
+    const clamped = ruleScore({ ...kase.dispute, reason: "UNAUTHORISED" }, { digitalGood: true });
+    expect(clamped.factors.reduce((s, f) => s + f.points, 0)).toBe(clamped.score);
+    expect(clamped.score).toBeGreaterThanOrEqual(0);
+  });
+
+  it("restrictToAllowed picks the nearest allowed action, and leaves it alone when nothing is allowed", () => {
+    expect(restrictToAllowed("FIGHT", ["OFFER", "ACCEPT"])).toBe("OFFER");
+    expect(restrictToAllowed("OFFER", ["FIGHT", "ACCEPT"])).toBe("ACCEPT");
+    expect(restrictToAllowed("ACCEPT", ["FIGHT"])).toBe("FIGHT");
+    expect(restrictToAllowed("FIGHT", [])).toBe("FIGHT");
+  });
+
+  it("recommendation is always in allowedActions when that list is non-empty (mock queue and tote bag)", async () => {
+    const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), noisyDrafter(), () => NOW);
+    const recs = [...(await copilot.queue()), await copilot.recommend(toteBag())];
+    for (const r of recs) if (r.allowedActions.length > 0) expect(r.allowedActions).toContain(r.action);
+  });
+
+  it("tote bag (not as described, JPY 2980, 0/3 evidence, OFFER/ACCEPT allowed): score 15, ACCEPT, human review kept, reason explains", async () => {
+    const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), noisyDrafter(), () => NOW);
+    const rec = await copilot.recommend(toteBag());
+    expect(rec.score).toBe(15);
+    expect(rec.action).toBe("ACCEPT");
+    expect(rec.rulesAction).toBe("ACCEPT");
+    expect(rec.needsHumanReview).toBe(true);
+    expect(rec.allowedActions).toEqual(["OFFER", "ACCEPT"]);
+    expect(rec.actionReason).toMatch(/FIGHT is not allowed/);
+    expect(rec.actionReason).toMatch(/Win score 15 < 30/);
+  });
+
+  it("no allowed seller action: recommendation is marked informational only", async () => {
+    const copilot = new DisputeCopilot(MockPayPalClient.fromFile(fixtures, NOW), new TemplateDrafter(), () => NOW);
+    const kase = toteBag();
+    const rec = await copilot.recommend({ ...kase, dispute: { ...kase.dispute, status: "UNDER_REVIEW" } });
+    expect(rec.allowedActions).toEqual([]);
+    expect(rec.actionReason).toMatch(/^Informational only/);
   });
 });

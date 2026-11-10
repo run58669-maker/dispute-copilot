@@ -348,7 +348,7 @@ describe("getFacts (real mode, mocked fetch)", () => {
     const copilot = new DisputeCopilot(client(impl), new TemplateDrafter(), () => NOW);
     const rec = await copilot.recommend({ dispute: dispute("CAP1"), facts: await client(impl).getFacts(dispute("CAP1")) });
     expect(rec).toMatchObject({ action: "FIGHT", needsHumanReview: true, actionChangedByLLM: false });
-    expect(rec.actionReason).toMatch(/^Insufficient facts/);
+    expect(rec.actionReason).toMatch(/Insufficient facts/);
   });
 });
 
@@ -378,28 +378,23 @@ describe("allowed actions", () => {
   });
 });
 
-describe("AI-changed recommendation", () => {
+describe("model text does not change the recommendation", () => {
   const cfg = { apiKey: "k", baseUrl: "https://llm.example", model: "m" };
-  const minus15 = (async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ assessment: "a", draft: "We accept.", delta: -15, why: "Buyer photos look convincing." }) } }] }))) as unknown as typeof fetch;
+  const minus15 = (async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ assessment: "a", draft: "We offer half.", delta: -15, why: "Buyer photos look convincing." }) } }] }))) as unknown as typeof fetch;
 
-  it("flags a flip and requires an explicit confirm to approve", async () => {
+  it("a model delta of -15 leaves action OFFER and the confirm flag off", async () => {
     const paypal = mock();
     const drafter = new LlmDrafter(cfg, minus15);
     const rec = await new DisputeCopilot(paypal, drafter, () => NOW).recommend(await paypal.getDispute("PP-D-MOCK-1002").then(async (d) => ({ dispute: d, facts: await paypal.getFacts(d) })));
-    expect(rec).toMatchObject({ rulesAction: "OFFER", action: "ACCEPT", actionChangedByLLM: true });
-
+    expect(rec).toMatchObject({ rulesAction: "OFFER", action: "OFFER", actionChangedByLLM: false });
     const { post } = serve(paypal, drafter, { adminToken: "t" });
-    const pv = (await (await post("/api/disputes/PP-D-MOCK-1002/preview", { action: "ACCEPT", draft: "We accept." })).json()) as { previewId: string; actionChangedByLLM: boolean };
-    expect(pv.actionChangedByLLM).toBe(true);
-    const blocked = await post("/api/disputes/PP-D-MOCK-1002/approve", { action: "ACCEPT", draft: "We accept.", previewId: pv.previewId }, { "x-admin-token": "t" });
-    expect(blocked.status).toBe(409);
-    expect(((await blocked.json()) as { error: string }).error).toMatch(/AI changed the recommendation from OFFER to ACCEPT/);
-    expect(paypal.sent).toHaveLength(0);
-    const ok = await post("/api/disputes/PP-D-MOCK-1002/approve", { action: "ACCEPT", draft: "We accept.", previewId: pv.previewId, confirmed: true }, { "x-admin-token": "t" });
+    const pv = (await (await post("/api/disputes/PP-D-MOCK-1002/preview", { action: "OFFER", draft: "We offer half." })).json()) as { previewId: string; actionChangedByLLM: boolean };
+    expect(pv.actionChangedByLLM).toBe(false);
+    const ok = await post("/api/disputes/PP-D-MOCK-1002/approve", { action: "OFFER", draft: "We offer half.", previewId: pv.previewId }, { "x-admin-token": "t" });
     expect(ok.status).toBe(200);
   });
 
-  it("does not flag when the model keeps the action", async () => {
+  it("does not flag anything on the mock queue", async () => {
     const queue = await new DisputeCopilot(mock(), new TemplateDrafter(), () => NOW).queue();
     expect(queue.every((r) => !r.actionChangedByLLM && r.rulesAction === r.action)).toBe(true);
   });

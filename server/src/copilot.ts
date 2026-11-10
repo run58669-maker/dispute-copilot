@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Drafter } from "./drafter.js";
 import { mapLimit } from "./limit.js";
 import { factsErrorReason, MAX_IN_FLIGHT, PayPalHttpError } from "./paypal-client.js";
-import { allowedActions, amountOf, buildRequest, clamp, decideAction, evidencePlan, hoursLeft, offerAmount, ruleScore, thresholdAmount } from "./policy.js";
+import { allowedActions, amountOf, buildRequest, decideAction, evidencePlan, hoursLeft, offerAmount, restrictToAllowed, ruleScore, thresholdAmount } from "./policy.js";
 import type { Action, DisputeCase, OutboundRequest, PayPalClient, Recommendation } from "./types.js";
 
 /** A preview and its recommendation stay valid this long; approve after that needs a fresh preview. */
@@ -75,43 +75,42 @@ export class DisputeCopilot {
     const amount = amountOf(dispute.dispute_amount);
     const plan = evidencePlan(dispute.reason, facts);
     const { score, factors } = ruleScore(dispute, facts);
-    // Missing facts must never quietly become OFFER/ACCEPT: route to a human with the fight checklist.
-    const first = facts.unknown
+    const allowed = allowedActions(dispute);
+    const thresholdValue = thresholdAmount(dispute.dispute_amount);
+    // The policy action comes from the rule score only. Missing facts route to FIGHT + human review when PayPal allows FIGHT.
+    const unknownFight = facts.unknown && (allowed.length === 0 || allowed.includes("FIGHT"));
+    const policy = unknownFight
       ? { action: "FIGHT" as Action, reason: `Insufficient facts: ${facts.unknownReason ?? "order data unavailable"} Human review needed before any response.` }
-      : decideAction(score, thresholdAmount(dispute.dispute_amount));
+      : decideAction(score, thresholdValue);
+    const action = restrictToAllowed(policy.action, allowed);
+    let actionReason = policy.reason;
+    if (facts.unknown && !unknownFight) actionReason = `Order facts unavailable (${facts.unknownReason ?? "order data unavailable"}), so the human review is needed; FIGHT is not allowed here. ${actionReason}`;
+    if (action !== policy.action) actionReason += ` ${policy.action} is not allowed by PayPal now (allowed: ${allowed.join(", ")}), so ${action} is the best allowed action.`;
+    if (allowed.length === 0) actionReason = `Informational only: PayPal allows no seller action now (status ${dispute.status}). ${actionReason}`;
     const offer = offerAmount(dispute.dispute_amount);
-    let drafted = await this.drafter.draft({ kase, action: first.action, score, factors, plan, ...(first.action === "OFFER" ? { offer } : {}) });
-
-    // The model may nudge the score within ±LLM_MAX_ADJUST; if that flips the action, redraft once for the new action.
-    const finalScore = clamp(score + (drafted.adjustment?.delta ?? 0), 0, 100);
-    const final = facts.unknown ? first : decideAction(finalScore, thresholdAmount(dispute.dispute_amount));
-    const changed = final.action !== first.action;
-    if (changed) {
-      const redraft = await this.drafter.draft({ kase, action: final.action, score: finalScore, factors, plan, ...(final.action === "OFFER" ? { offer } : {}) });
-      drafted = { ...redraft, ...(drafted.adjustment ? { adjustment: drafted.adjustment } : {}) };
-    }
+    // The model writes text only (assessment, draft). It does not change the score or the action.
+    const drafted = await this.drafter.draft({ kase, action, score, factors, plan, ...(action === "OFFER" ? { offer } : {}) });
     return {
       disputeId: dispute.dispute_id,
       hoursLeft: hoursLeft(dispute, this.now()),
       amount,
       currency: dispute.dispute_amount.currency_code,
       reason: dispute.reason,
-      score: finalScore,
+      score,
       factors,
       evidencePlan: plan,
-      action: final.action,
-      actionReason: final.reason,
-      rulesAction: first.action,
-      actionChangedByLLM: changed,
+      action,
+      actionReason,
+      rulesAction: policy.action,
+      actionChangedByLLM: false,
       needsHumanReview: Boolean(facts.unknown),
-      allowedActions: allowedActions(dispute),
+      allowedActions: allowed,
       paypalStatus: dispute.status,
       ...(dispute.dispute_life_cycle_stage ? { lifecycleStage: dispute.dispute_life_cycle_stage } : {}),
-      ...(final.action === "OFFER" ? { offerAmount: offer } : {}),
+      ...(action === "OFFER" ? { offerAmount: offer } : {}),
       assessment: drafted.assessment,
       draft: drafted.draft,
       draftSource: drafted.source,
-      ...(drafted.adjustment && drafted.adjustment.delta !== 0 ? { llmAdjustment: drafted.adjustment } : {}),
     };
   }
 

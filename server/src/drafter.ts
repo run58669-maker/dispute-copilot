@@ -95,7 +95,7 @@ export const ASSESSMENT_MAX = 900;
 
 /**
  * The exact prompt sent to the model. The model writes text only: the action is decided in code
- * (policy.decideAction) and passed in; the model may suggest a bounded score nudge, which code clamps.
+ * (policy.decideAction) and passed in; the score is rule-based; the model does not change it.
  * Buyer messages are quoted as untrusted data.
  */
 export function buildPrompt(input: DraftInput): { system: string; user: string } {
@@ -107,8 +107,8 @@ export function buildPrompt(input: DraftInput): { system: string; user: string }
     `Write (1) "assessment": one paragraph (under ${ASSESSMENT_MAX} characters) for the seller explaining what the case hinges on, the strongest and weakest facts, and why the action fits;`,
     `(2) "draft": the ${noteKind} the seller will submit to PayPal: plain English, factual, polite, under 1200 characters.`,
     ...(input.action === "ACCEPT" ? ["Do not say the buyer has already been refunded: PayPal issues the refund when the claim is accepted."] : []),
-    `You may suggest adjusting the rule-based win score by an integer between -${LLM_MAX_ADJUST} and ${LLM_MAX_ADJUST} if the facts justify it ("delta", 0 if not), with a one-sentence reason ("why").`,
-    'Reply with JSON only: {"assessment": string, "draft": string, "delta": integer, "why": string}.',
+    "The win score is computed by rules; do not change it.",
+    'Reply with JSON only: {"assessment": string, "draft": string}.',
   ].join(" ");
   const user = [
     `Action: ${input.action}${input.offer ? ` (refund offer ${input.offer.value} ${input.offer.currency_code})` : ""}.`,
@@ -171,7 +171,6 @@ export class LlmDrafter implements Drafter {
         assessment: parsed.assessment || templateAssessment(input),
         draft: truncateNote(parsed.draft),
         source: "llm",
-        adjustment: { delta: parsed.delta, why: parsed.why },
       };
     } catch {
       return this.fallback.draft(input);
