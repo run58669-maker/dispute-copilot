@@ -37,6 +37,6 @@ button:disabled, button.primary:disabled { background: var(--line); color: var(-
 .alert { background: #fde8e8; color: #8a1c1c; border: 1px solid #f1a5a5; border-radius: 6px; padding: 8px 10px; font-weight: 600; }
 .sent { color: var(--fight); font-weight: 600; }
 option:disabled { color: var(--muted); }
-pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow: auto; font-size: 12px; max-height: 240px; }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow: auto; font-size: 12px; max-height: 240px; white-space: pre-wrap; word-break: break-word; }
 .note { color: var(--muted); font-size: 13px; }
 .assessment { line-height: 1.5; margin: 4px 0 12px; }
