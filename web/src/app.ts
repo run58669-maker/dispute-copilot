@@ -117,6 +117,10 @@ function showCase(rec: Rec): void {
     draft: (caseEl.querySelector("#draft") as HTMLTextAreaElement).value,
   });
   const refresh = () => {
+    if (!allowed.size) {
+      gate.textContent = `PayPal allows no seller action for this dispute now (status ${rec.paypalStatus}).`;
+      return;
+    }
     const reasons: string[] = [];
     if (!previewed) reasons.push("preview first");
     if (serverWrites === "read-only") reasons.push("this demo server is read-only");
