@@ -161,6 +161,13 @@ function isModelNotFound(error: LlmCallError): boolean {
   return error.status === 400 && /model/i.test(error.message) && /not found|not supported|does not exist|unknown model|invalid model/i.test(error.message);
 }
 
+/** Wait before the single same-model retry of a transient failure. */
+export const TRANSIENT_RETRY_MS = 1500;
+/** 500/502/503/504 or a timeout: worth one retry, never marks the model exhausted or unavailable. */
+function isTransient(error: unknown): boolean {
+  if (error instanceof LlmCallError) return error.status !== undefined && [500, 502, 503, 504].includes(error.status);
+  return error instanceof Error && error.name === "AbortError";
+}
 class LlmCallError extends Error {
   constructor(readonly kind: LlmFailure["kind"], message: string, readonly status?: number, readonly retryAfterMs?: number) {
     super(message);
@@ -243,9 +250,15 @@ export class LlmDrafter implements Drafter {
         try {
           parsed = await this.attempt(model, system, user);
         } catch (error) {
-          if (!(error instanceof LlmCallError) || error.status !== 429 || (error.retryAfterMs ?? 2000) > RETRY_CAP_MS) throw error;
-          await this.sleep(error.retryAfterMs ?? 2000);
-          parsed = await this.attempt(model, system, user);
+          if (isTransient(error)) {
+            this.record(error, model);
+            await this.sleep(TRANSIENT_RETRY_MS);
+            parsed = await this.attempt(model, system, user);
+          } else {
+            if (!(error instanceof LlmCallError) || error.status !== 429 || (error.retryAfterMs ?? 2000) > RETRY_CAP_MS) throw error;
+            await this.sleep(error.retryAfterMs ?? 2000);
+            parsed = await this.attempt(model, system, user);
+          }
         }
         this.lastOkAt = new Date().toISOString();
         return { assessment: parsed.assessment || templateAssessment(input), draft: truncateNote(parsed.draft), source: "llm", model };
@@ -259,6 +272,7 @@ export class LlmDrafter implements Drafter {
           this.unavailable.add(model);
           continue;
         }
+        if (isTransient(error)) continue; // still failing after one retry: next model, this one stays usable
         break;
       }
     }

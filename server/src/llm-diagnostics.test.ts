@@ -263,3 +263,64 @@ describe("LLM model fallback chain", () => {
     }
   });
 });
+
+describe("transient 5xx / timeout", () => {
+  const unavailable = () => new Response("This model is currently experiencing high demand", { status: 503 });
+  const model = (init: RequestInit) => (JSON.parse(String(init.body)) as { model: string }).model;
+
+  it("retries a 503 once on the same model after 1.5 s, then succeeds", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seen: string[] = [];
+    const sleeps: number[] = [];
+    const fetchImpl = (async (_u: string, init: RequestInit) => {
+      seen.push(model(init));
+      return seen.length === 1 ? unavailable() : okBody();
+    }) as unknown as typeof fetch;
+    const drafter = new LlmDrafter({ ...cfg, model: "a", fallbackModels: ["b"] }, fetchImpl, async (ms) => void sleeps.push(ms));
+    const result = await drafter.draft(await input("PP-D-MOCK-1001"));
+    expect(seen).toEqual(["a", "a"]);
+    expect(sleeps).toEqual([1500]);
+    expect(result).toMatchObject({ source: "llm", model: "a" });
+  });
+
+  it("after two 503s moves to the next model without marking the first exhausted or unavailable", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seen: string[] = [];
+    const fetchImpl = (async (_u: string, init: RequestInit) => {
+      seen.push(model(init));
+      return model(init) === "a" ? unavailable() : okBody();
+    }) as unknown as typeof fetch;
+    const drafter = new LlmDrafter({ ...cfg, model: "a", fallbackModels: ["b"] }, fetchImpl, noSleep);
+    const result = await drafter.draft(await input("PP-D-MOCK-1001"));
+    expect(seen).toEqual(["a", "a", "b"]);
+    expect(result).toMatchObject({ source: "llm", model: "b" });
+    expect(drafter.status().llmExhausted).toEqual([]);
+    expect(drafter.status().llmUnavailable).toEqual([]);
+  });
+
+  it("falls to the template only when every model keeps failing", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return unavailable();
+    }) as unknown as typeof fetch;
+    const drafter = new LlmDrafter({ ...cfg, model: "a", fallbackModels: ["b"] }, fetchImpl, noSleep);
+    expect((await drafter.draft(await input("PP-D-MOCK-1001"))).source).toBe("template");
+    expect(calls).toBe(4);
+    expect(drafter.status().llmExhausted).toEqual([]);
+  });
+
+  it("retries a timeout once, then moves on", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seen: string[] = [];
+    const fetchImpl = ((_u: string, init: RequestInit) => {
+      seen.push(model(init));
+      if (model(init) === "b") return Promise.resolve(okBody());
+      return new Promise((_r, rej) => init.signal?.addEventListener("abort", () => rej(Object.assign(new Error("aborted"), { name: "AbortError" }))));
+    }) as unknown as typeof fetch;
+    const drafter = new LlmDrafter({ ...cfg, model: "a", fallbackModels: ["b"], timeoutMs: 20 }, fetchImpl, noSleep);
+    expect(await drafter.draft(await input("PP-D-MOCK-1001"))).toMatchObject({ source: "llm", model: "b" });
+    expect(seen).toEqual(["a", "a", "b"]);
+  });
+});
