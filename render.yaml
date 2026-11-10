@@ -6,7 +6,7 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: MODE
-        value: mock
+        sync: false
       - key: PAYPAL_CLIENT_ID
         sync: false
       - key: PAYPAL_CLIENT_SECRET
