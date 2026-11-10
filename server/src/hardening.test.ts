@@ -160,7 +160,7 @@ describe("SandboxPayPalClient (mocked fetch)", () => {
   it("follows list pagination via the next link, de-duplicates, and refuses foreign next links", async () => {
     const { impl, calls } = scripted([
       oauth(),
-      ["GET /v1/customer/disputes?dispute_state=REQUIRED_ACTION&page_size=50", () => json({ items: [{ dispute_id: "D-1" }, { dispute_id: "D-2" }], links: [{ rel: "next", href: `${SANDBOX}/v1/customer/disputes?page=2` }] })],
+      ["GET /v1/customer/disputes?dispute_state=REQUIRED_ACTION,UNDER_PAYPAL_REVIEW&page_size=50", () => json({ items: [{ dispute_id: "D-1" }, { dispute_id: "D-2" }], links: [{ rel: "next", href: `${SANDBOX}/v1/customer/disputes?page=2` }] })],
       ["GET /v1/customer/disputes?page=2", () => json({ items: [{ dispute_id: "D-2" }, { dispute_id: "D-3" }, { dispute_id: "../x" }], links: [{ rel: "next", href: "https://evil.example/v1/customer/disputes?page=3" }] })],
       ["GET /v1/customer/disputes/D-", () => json({ dispute_id: "D" })],
     ]);

@@ -106,6 +106,8 @@ export interface SandboxConfig {
 }
 
 const ID_RE = /^[A-Za-z0-9-]{1,64}$/;
+/** Dispute states the queue shows: the seller must act, or PayPal is reviewing (shown without actions). */
+export const OPEN_STATES = "REQUIRED_ACTION,UNDER_PAYPAL_REVIEW";
 /** At most this many disputes are fetched from PayPal at once. */
 export const MAX_IN_FLIGHT = 5;
 export const UNKNOWN_WRITE = "Status unknown — verify in PayPal Resolution Center before trying again; nothing was resent";
@@ -225,7 +227,9 @@ export class SandboxPayPalClient implements PayPalClient {
 
   async listOpenDisputes(): Promise<Dispute[]> {
     const ids: string[] = [];
-    let path: string | null = "/v1/customer/disputes?dispute_state=REQUIRED_ACTION&page_size=50";
+    // Real sandbox: most new chargeback-stage cases (and every case the seller has answered) sit in UNDER_PAYPAL_REVIEW,
+    // so a REQUIRED_ACTION-only queue hides them. They are listed read-only (allowedActions() returns none for them).
+    let path: string | null = `/v1/customer/disputes?dispute_state=${OPEN_STATES}&page_size=50`;
     for (let page = 0; path && page < (this.config.maxPages ?? 4); page += 1) {
       const { body } = await this.call(path);
       const parsed = (body ?? {}) as { items?: Array<{ dispute_id: string }>; links?: Array<{ rel?: string; href?: string }> };
