@@ -89,7 +89,7 @@ function showCase(rec: Rec): void {
   caseEl.innerHTML = `
     <h2>${esc(rec.disputeId)}</h2>
     <p><span class="action ${rec.action}">${rec.action}</span> · win score ${rec.score}/100 · ${money(rec.amount, rec.currency)} ${esc(rec.currency)}
-      ${rec.hoursLeft === null ? "" : `· ${rec.hoursLeft} h left`}</p>
+      ${rec.hoursLeft === null ? '· <span title="no seller deadline">— h left</span>' : `· ${rec.hoursLeft} h left`}</p>
     ${rec.needsHumanReview ? '<p class="alert">Insufficient facts — a human must review before any response.</p>' : ""}
     <p>${esc(rec.actionReason)}</p>
     <p class="note">PayPal status ${esc(rec.paypalStatus)}${rec.lifecycleStage ? ` · stage ${esc(rec.lifecycleStage)}` : ""} · PayPal currently allows: <b>${rec.allowedActions.length ? rec.allowedActions.join(", ") : "no seller action"}</b></p>
@@ -98,7 +98,7 @@ function showCase(rec: Rec): void {
     <details><summary>Why this score</summary><ul class="factors">${rec.factors.map((f) => `<li>${esc(f.label)}: ${f.points >= 0 ? "+" : ""}${f.points}</li>`).join("")}</ul></details>
     <h3>Evidence PayPal asks for</h3>
     <ul class="plan">${rec.evidencePlan.map((p) => `<li class="${p.have ? "" : "missing"}">${p.have ? "✓" : "✗"} ${esc(p.evidence_type)} — ${esc(p.why)}</li>`).join("")}</ul>
-    <h3>Draft <span class="hint">(${aiLabel(rec)}; edit freely)</span></h3>
+    <h3>${allowed.size ? "Draft" : "Prepared note (not sendable now)"} <span class="hint">(${aiLabel(rec)}${allowed.size ? "; edit freely" : "; for use only if PayPal asks for more"})</span></h3>
     <textarea id="draft">${esc(rec.draft)}</textarea>
     <div class="row">
       <label>Action <select id="action">${(["FIGHT", "OFFER", "ACCEPT"] as const)
@@ -182,7 +182,15 @@ async function load(): Promise<void> {
     columnDefs: [
       { field: "disputeId", headerName: "Dispute", flex: 2, minWidth: 140 },
       { field: "reason", headerName: "Reason", flex: 2, minWidth: 150, valueFormatter: (p) => String(p.value ?? "").replace(/_/g, " ").toLowerCase() },
-      { field: "hoursLeft", headerName: "Hours left", flex: 1, minWidth: 90, sort: "asc" },
+      {
+        field: "hoursLeft",
+        headerName: "Hours left",
+        flex: 1,
+        minWidth: 90,
+        sort: "asc",
+        valueFormatter: (p) => (p.value === null || p.value === undefined ? "—" : String(p.value)),
+        tooltipValueGetter: (p) => (p.value === null || p.value === undefined ? "no seller deadline" : undefined),
+      },
       { field: "amount", headerName: "Amount", flex: 1, minWidth: 90, valueFormatter: (p) => money(p.value as number, (p.data as Rec | undefined)?.currency ?? "") },
       { field: "currency", headerName: "Currency", flex: 1, minWidth: 80 },
       { field: "score", headerName: "Win score", flex: 1, minWidth: 80 },
