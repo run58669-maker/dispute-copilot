@@ -1,4 +1,5 @@
 import { createGrid, type GridApi, type GridOptions } from "ag-grid-community";
+import { compareHoursLeft, hoursLeftText } from "./hours.js";
 
 type Action = "FIGHT" | "OFFER" | "ACCEPT";
 interface Rec {
@@ -89,7 +90,7 @@ function showCase(rec: Rec): void {
   caseEl.innerHTML = `
     <h2>${esc(rec.disputeId)}</h2>
     <p><span class="action ${rec.action}">${rec.action}</span> · win score ${rec.score}/100 · ${money(rec.amount, rec.currency)} ${esc(rec.currency)}
-      ${rec.hoursLeft === null ? '· <span title="no seller deadline">— h left</span>' : `· ${rec.hoursLeft} h left`}</p>
+      · ${hoursLeftText(rec.hoursLeft)}</p>
     ${rec.needsHumanReview ? '<p class="alert">Insufficient facts — a human must review before any response.</p>' : ""}
     <p>${esc(rec.actionReason)}</p>
     <p class="note">PayPal status ${esc(rec.paypalStatus)}${rec.lifecycleStage ? ` · stage ${esc(rec.lifecycleStage)}` : ""} · PayPal currently allows: <b>${rec.allowedActions.length ? rec.allowedActions.join(", ") : "no seller action"}</b></p>
@@ -188,6 +189,7 @@ async function load(): Promise<void> {
         flex: 1,
         minWidth: 90,
         sort: "asc",
+        comparator: compareHoursLeft,
         valueFormatter: (p) => (p.value === null || p.value === undefined ? "—" : String(p.value)),
         tooltipValueGetter: (p) => (p.value === null || p.value === undefined ? "no seller deadline" : undefined),
       },
