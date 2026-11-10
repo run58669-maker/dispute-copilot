@@ -67,7 +67,7 @@ describe("LLM failure diagnostics", () => {
     const server = createApp(MockPayPalClient.fromFile(fixtures, NOW), drafter).listen(0);
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     try {
-      expect(await (await fetch(`${url}/api/health`)).json()).toEqual({ ok: true, paypal: "mock", drafter: "llm", llmModels: ["m"], llmExhausted: [], writes: "read-only" });
+      expect(await (await fetch(`${url}/api/health`)).json()).toEqual({ ok: true, paypal: "mock", drafter: "llm", llmModels: ["m"], llmExhausted: [], llmUnavailable: [], writes: "read-only" });
       await drafter.draft(await input("PP-D-MOCK-1001"));
       const h1 = (await (await fetch(`${url}/api/health`)).json()) as Record<string, unknown>;
       expect(h1.llmLastError).toMatchObject({ kind: "http", status: 500 });
@@ -214,6 +214,17 @@ describe("LLM model fallback chain", () => {
     expect(seen3).toEqual(["a", "b"]);
   });
 
+  it("skips a model that answered not-found for the rest of the process and lists it as llmUnavailable", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seen: string[] = [];
+    const drafter = new LlmDrafter(chainCfg, router({ a: "404", b: "ok" }, seen), noSleep);
+    await drafter.draft(await input("PP-D-MOCK-1001"));
+    await drafter.draft(await input("PP-D-MOCK-1002"));
+    expect(seen).toEqual(["a", "b", "b"]);
+    expect(drafter.status().llmUnavailable).toEqual(["a"]);
+    expect(drafter.status().llmExhausted).toEqual([]);
+  });
+
   it("falls back to the template when every model fails, without a model name", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const seen: string[] = [];
@@ -224,7 +235,7 @@ describe("LLM model fallback chain", () => {
     expect(drafter.status().llmExhausted?.map((e) => e.model)).toEqual(["a", "c"]);
     seen.length = 0;
     expect((await drafter.draft(await input("PP-D-MOCK-1002"))).source).toBe("template");
-    expect(seen).toEqual(["b"]); // the quota-exhausted ones are skipped
+    expect(seen).toEqual([]); // quota-exhausted and not-found models are all skipped
   });
 
   it("caches by dispute state, not by model; draftModel reaches the recommendation and /api/health", async () => {

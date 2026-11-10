@@ -97,7 +97,7 @@ export interface LlmConfig {
   timeoutMs?: number;
 }
 
-export const DEFAULT_FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-3.5-flash-lite"];
+export const DEFAULT_FALLBACK_MODELS = ["gemini-3.5-flash-lite"];
 /** How long a model that returned a quota 429 is skipped. */
 export const EXHAUSTED_MS = 15 * 60_000;
 
@@ -144,6 +144,8 @@ export interface LlmFailure {
 export interface LlmStatus {
   llmModels?: string[];
   llmExhausted?: Array<{ model: string; until: string }>;
+  /** Models that answered model-not-found: skipped until the process restarts. */
+  llmUnavailable?: string[];
   llmLastError?: LlmFailure;
   llmLastOkAt?: string;
 }
@@ -185,9 +187,9 @@ export function retryDelayMs(retryAfterHeader: string | null | undefined, body: 
 }
 
 /**
- * Any OpenAI-compatible /chat/completions endpoint (default: Gemini 2.5 Flash free tier).
+ * Any OpenAI-compatible /chat/completions endpoint (default: Gemini free tier).
  * Results are cached per dispute state + action so reloading the queue does not burn the free quota.
- * Models are tried in order (config.model, then fallbackModels): a quota 429 (after the one retry) marks the model exhausted for EXHAUSTED_MS and moves on; so does model-not-found.
+ * Models are tried in order (config.model, then fallbackModels): a quota 429 (after the one retry) marks the model exhausted for EXHAUSTED_MS and moves on; model-not-found skips the model for the life of the process (llmUnavailable).
  * Falls back to the template when no model succeeds (HTTP error, timeout, bad JSON); failures are not cached.
  * At most LLM_CONCURRENCY calls run at once; a 429 is retried once after the delay it states (up to RETRY_CAP_MS).
  * The last failure (scrubbed, no key) and last success time are exposed through status() for /api/health.
@@ -199,6 +201,7 @@ export class LlmDrafter implements Drafter {
   private readonly limit = pLimit(LLM_CONCURRENCY);
   private readonly chain: string[];
   private readonly exhaustedUntil = new Map<string, number>();
+  private readonly unavailable = new Set<string>();
   private lastError: LlmFailure | undefined;
   private lastOkAt: string | undefined;
 
@@ -214,7 +217,7 @@ export class LlmDrafter implements Drafter {
   status(): LlmStatus {
     const t = this.now();
     const exhausted = this.chain.filter((m) => (this.exhaustedUntil.get(m) ?? 0) > t).map((m) => ({ model: m, until: new Date(this.exhaustedUntil.get(m) as number).toISOString() }));
-    return { llmModels: this.chain, llmExhausted: exhausted, ...(this.lastError ? { llmLastError: this.lastError } : {}), ...(this.lastOkAt ? { llmLastOkAt: this.lastOkAt } : {}) };
+    return { llmModels: this.chain, llmExhausted: exhausted, llmUnavailable: this.chain.filter((m) => this.unavailable.has(m)), ...(this.lastError ? { llmLastError: this.lastError } : {}), ...(this.lastOkAt ? { llmLastOkAt: this.lastOkAt } : {}) };
   }
 
   draft(input: DraftInput): Promise<DraftResult> {
@@ -234,7 +237,7 @@ export class LlmDrafter implements Drafter {
   private async call(input: DraftInput): Promise<DraftResult> {
     const { system, user } = buildPrompt(input);
     for (const model of this.chain) {
-      if ((this.exhaustedUntil.get(model) ?? 0) > this.now()) continue;
+      if (this.unavailable.has(model) || (this.exhaustedUntil.get(model) ?? 0) > this.now()) continue;
       try {
         let parsed: { assessment: string; draft: string };
         try {
@@ -252,7 +255,10 @@ export class LlmDrafter implements Drafter {
           this.exhaustedUntil.set(model, this.now() + EXHAUSTED_MS);
           continue;
         }
-        if (error instanceof LlmCallError && isModelNotFound(error)) continue;
+        if (error instanceof LlmCallError && isModelNotFound(error)) {
+          this.unavailable.add(model);
+          continue;
+        }
         break;
       }
     }
